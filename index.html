@@ -17726,6 +17726,37 @@ function puntoDentro(p, anillo) {
   return d;
 }
 
+// Un círculo no tiene por qué ser un pívot, ni una medición una parcela
+const CLASES_DIBUJO = [
+  { v:"pivot",   l:"Pívot",            c:"#3D8BCD", icono:"◎" },
+  { v:"balsa",   l:"Balsa o depósito", c:"#2E9BB5", icono:"💧" },
+  { v:"nave",    l:"Nave o corral",    c:"#B5732E", icono:"🏠" },
+  { v:"parcela", l:"Parcela",          c:"#E8734A", icono:"▱" },
+  { v:"cerca",   l:"Cercado",          c:"#8A6FB0", icono:"⬡" },
+  { v:"monte",   l:"Monte o dehesa",   c:"#4A6B4A", icono:"🌳" },
+  { v:"otro",    l:"Otro",             c:"#9A9384", icono:"📍" }
+];
+const claseDibujo = v => CLASES_DIBUJO.find(c => c.v === v) || CLASES_DIBUJO[0];
+
+// Un pívot no siempre da la vuelta entera: "arco" son los grados que barre
+const arcoDe = (el) => {
+  const a = Number(el && el.arco);
+  return isFinite(a) && a > 0 && a < 360 ? a : 360;
+};
+const haCirculo = (r, arco) => Math.PI * r * r * (arcoDe({ arco }) / 360) / 10000;
+
+// Trazado del sector en coordenadas de pantalla
+function trazoSector(cx, cy, rp, desde, arco) {
+  if (arco >= 360) return null;
+  const a0 = (desde - 90) * Math.PI / 180;
+  const a1 = (desde + arco - 90) * Math.PI / 180;
+  const x0 = cx + rp * Math.cos(a0), y0 = cy + rp * Math.sin(a0);
+  const x1 = cx + rp * Math.cos(a1), y1 = cy + rp * Math.sin(a1);
+  const grande = arco > 180 ? 1 : 0;
+  return `M ${cx.toFixed(1)} ${cy.toFixed(1)} L ${x0.toFixed(1)} ${y0.toFixed(1)} ` +
+         `A ${rp.toFixed(1)} ${rp.toFixed(1)} 0 ${grande} 1 ${x1.toFixed(1)} ${y1.toFixed(1)} Z`;
+}
+
 const COLOR_FINCA = {
   "Finca Batanejo SA": "#FFD34D",
   "Finca Tamujoso": "#FF7A6B",
@@ -17749,6 +17780,7 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
   const [medida, setMedida] = useState("");
   const [resumen, setResumen] = useState("");
   const [pinta, setPinta] = useState("cultivo");
+  const [arcoNuevo, setArcoNuevo] = useState(360);
 
   const planes = {};
   docs.filter(d => d.kind === "parcela" && d.type === "plan").forEach(d => { planes[d.id] = d; });
@@ -17757,6 +17789,7 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
 
   // El dibujo se engancha una sola vez, así que tiene que leer de aquí
   // y no de las variables del momento en que se enganchó.
+  const arcoRef = useRef(360);
   const vivos = useRef({ planes, pivots, zonas, saveDoc, setView, settings, showToast });
   vivos.current = { planes, pivots, zonas, saveDoc, setView, settings, showToast };
 
@@ -17887,7 +17920,7 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
     zonasVivas.forEach(z2 => {
       const pts = (z2.pts || []).map(([x, y]) => [px(x), py(y)]);
       if (pts.length < 3) return;
-      const col = z2.cultivo ? pacCultivo(z2.cultivo).c : "#E8734A";
+      const col = z2.cultivo ? pacCultivo(z2.cultivo).c : claseDibujo(z2.clase || "parcela").c;
       nodo("path", { d: pts.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ") + " Z",
         fill: col + "40", stroke: col, "stroke-width": 2.4 });
       if (v.z > 12.5) {
@@ -17902,12 +17935,18 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
     pivotsVivos.forEach(pv => {
       const rp = metrosAFraccion(pv.r, pv.cy) * esc, x = px(pv.cx), y = py(pv.cy);
       if (x < -rp - 60 || x > W + rp + 60 || y < -rp - 60 || y > H + rp + 60) return;
-      nodo("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: Math.max(rp, 3).toFixed(1),
-        fill: "rgba(61,139,205,.26)", stroke: "#3D8BCD", "stroke-width": 2.2, "stroke-dasharray": "7 4" });
-      nodo("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: 4, fill: "#3D8BCD", stroke: "#fff", "stroke-width": 1.5 });
+      const colC = pv.cultivo ? pacCultivo(pv.cultivo).c : claseDibujo(pv.clase).c;
+      const arco = arcoDe(pv);
+      const sector = trazoSector(x, y, Math.max(rp, 3), Number(pv.desde) || 0, arco);
+      if (sector) nodo("path", { d: sector, fill: colC + "42", stroke: colC, "stroke-width": 2.2, "stroke-dasharray": "7 4" });
+      else nodo("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: Math.max(rp, 3).toFixed(1),
+        fill: colC + "42", stroke: colC, "stroke-width": 2.2, "stroke-dasharray": "7 4" });
+      nodo("line", { x1: (x - 7).toFixed(1), y1: y.toFixed(1), x2: (x + 7).toFixed(1), y2: y.toFixed(1), stroke: "#fff", "stroke-width": 2 });
+      nodo("line", { x1: x.toFixed(1), y1: (y - 7).toFixed(1), x2: x.toFixed(1), y2: (y + 7).toFixed(1), stroke: "#fff", "stroke-width": 2 });
+      nodo("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: 5, fill: colC, stroke: "#fff", "stroke-width": 2 });
       if (v.z > 12.5) {
         etiquetas.push({ x, y: y - 9, t: pv.nombre || "Pívot" });
-        etiquetas.push({ x, y: y + 18, t: `${(Math.PI * pv.r * pv.r / 10000).toFixed(1)} ha`, peq: true });
+        etiquetas.push({ x, y: y + 18, t: `${(Number(pv.ha) || 0).toFixed(1)} ha${arco < 360 ? ` · ${arco}°` : ""}`, peq: true });
       }
     });
 
@@ -18000,7 +18039,7 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
         const cx = ev.clientX - r.left, cy = ev.clientY - r.top;
         const e = est.current, mundo = aFraccion(cx, cy);
 
-        console.log("[Plano] Toque · herramienta:", e.herramienta, "· centro marcado:", !!e.centroTmp);
+        console.log("[Plano] Toque · herramienta:", e.herramienta, "· movido:", movido);
 
         if (e.herramienta === "medir") {
           e.vertices.push(mundo);
@@ -18048,8 +18087,10 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
     const v = vivos.current;
     const doc = {
       id: "pivot-" + Date.now(), kind: "parcela", type: "pivot",
-      cx, cy, r, nombre: "Pívot " + (v.pivots.length + 1), cultivo: "", notes: "",
-      ha: Math.PI * r * r / 10000,
+      cx, cy, r, arco: arcoRef.current, desde: 0, clase: "pivot",
+      nombre: (arcoRef.current === 360 ? "Pívot " : "Sector ") + (v.pivots.length + 1),
+      cultivo: "", notes: "",
+      ha: haCirculo(r, arcoRef.current),
       worker: v.settings.workerName || "", farm: est.current.finca === "todas" ? "" : est.current.finca,
       createdAt: new Date().toISOString(), status: "borrador", sentAt: null
     };
@@ -18057,7 +18098,7 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
     try {
       await v.saveDoc(doc);
       console.log("[Plano] Pívot guardado correctamente");
-      v.showToast(`Pívot de ${doc.ha.toFixed(1)} ha guardado`);
+      v.showToast(`Círculo de ${doc.ha.toFixed(1)} ha guardado`);
     } catch (err) {
       console.error("[Plano] Error al guardar el pívot:", err);
       v.showToast("No se ha podido guardar: " + (err && err.message ? err.message : "error"), "err");
@@ -18073,7 +18114,7 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
     if (pts.length < 3) { v.showToast("Hacen falta tres puntos", "err"); return; }
     const doc = {
       id: "zona-" + Date.now(), kind: "parcela", type: "zona",
-      pts: pts.slice(), nombre: "Zona " + (v.zonas.length + 1), cultivo: "", notes: "",
+      pts: pts.slice(), clase: "parcela", nombre: "Zona " + (v.zonas.length + 1), cultivo: "", notes: "",
       ha: superficieHa(pts), perimetro: Math.round(perimetroMetros(pts)),
       worker: v.settings.workerName || "", farm: est.current.finca === "todas" ? "" : est.current.finca,
       createdAt: new Date().toISOString(), status: "borrador", sentAt: null
@@ -18091,13 +18132,18 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
     pintar();
   };
 
+  const elegirArco = (a) => { arcoRef.current = a; setArcoNuevo(a); };
+
   const usarHerramienta = (h) => {
     const e = est.current;
     e.herramienta = e.herramienta === h ? null : h;
     e.centroTmp = null; e.previo = null; e.vertices = []; e.puntero = null;
     setHerramienta(e.herramienta);
     setMedida(e.herramienta === "medir" ? "Toca los vértices"
-      : e.herramienta === "pivot" ? "Toca el centro del pívot sobre la foto" : "");
+      : e.herramienta === "pivot"
+        ? (arcoRef.current === 360 ? "Toca el centro del círculo sobre la foto"
+                                   : `Toca el centro · saldrá de ${arcoRef.current}°`)
+        : "");
     pintar();
   };
 
@@ -18139,12 +18185,12 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
         <button onClick={() => usarHerramienta("medir")}
           className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
             herramienta === "medir" ? "bg-orange-600 text-white" : "bg-white/60 text-stone-700 border border-stone-300/40"}`}>
-          <span>📐</span> Medir superficie
+          <span>📐</span> Medir
         </button>
         <button onClick={() => usarHerramienta("pivot")}
           className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
             herramienta === "pivot" ? "bg-blue-600 text-white" : "bg-white/60 text-stone-700 border border-stone-300/40"}`}>
-          <span>◎</span> Marcar pívot
+          <span>◎</span> Círculo
         </button>
       </div>
 
@@ -18169,6 +18215,26 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
           <button onClick={() => zoom(-1)} className="w-9 h-9 rounded-lg bg-white/95 border border-stone-300 text-lg font-bold text-emerald-950 shadow-sm">−</button>
         </div>
 
+        {herramienta === "pivot" && !cargando && (
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+            <div className="relative">
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-0.5 bg-white shadow" />
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-12 w-0.5 bg-white shadow" />
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full border-2 border-white" />
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-blue-500 border border-white" />
+            </div>
+          </div>
+        )}
+
+        {herramienta && !cargando && (
+          <div className={`absolute top-2 left-2 right-2 rounded-lg px-3 py-2 text-white text-xs font-bold text-center shadow-lg ${
+            herramienta === "medir" ? "bg-orange-600" : "bg-blue-600"}`}>
+            {herramienta === "medir"
+              ? "Toca los vértices sobre la foto"
+              : "Toca el centro, o mueve el mapa hasta la cruz y usa el botón de abajo"}
+          </div>
+        )}
+
         {!cargando && (
           <div className="absolute left-2 bottom-2 bg-white/92 border border-stone-300/50 rounded-lg px-2.5 py-1.5 max-w-[60%]">
             <p className="text-[11px] font-bold text-emerald-950 leading-tight">{resumen}</p>
@@ -18184,6 +18250,32 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
       {herramienta && (
         <div className={`rounded-xl p-3 mt-2 text-white ${herramienta === "medir" ? "bg-orange-700" : "bg-blue-700"}`}>
           <p className="text-sm font-bold mb-2">{medida}</p>
+
+          {herramienta === "pivot" && (
+            <div className="mb-2.5">
+              <button onClick={() => {
+                  const v = est.current.vista;
+                  guardarPivot(v.cx, v.cy, 400);
+                }}
+                className="w-full bg-white text-blue-700 rounded-lg py-2.5 text-xs font-bold mb-2.5">
+                Ponerlo donde está la cruz
+              </button>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-white/70 mb-1.5">¿Qué parte del círculo?</p>
+              <div className="flex gap-1.5 flex-wrap">
+                {[
+                  { a: 360, l: "Entero" },
+                  { a: 270, l: "Tres cuartos" },
+                  { a: 180, l: "Medio" },
+                  { a: 90,  l: "Un cuarto" }
+                ].map(o => (
+                  <button key={o.a} onClick={() => elegirArco(o.a)}
+                    className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition ${
+                      arcoNuevo === o.a ? "bg-white text-blue-700" : "bg-white/20 text-white"
+                    }`}>{o.l}</button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex gap-2">
             {herramienta === "medir" && (
               <button onClick={() => { est.current.vertices.pop(); pintar(); }}
@@ -18203,51 +18295,115 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
       {true && (
         <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mt-3 mb-6">
           <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-2">
-            Dibujado sobre el plano · {pivots.length} pívot{pivots.length === 1 ? "" : "s"} · {zonas.length} medicion{zonas.length === 1 ? "" : "es"}
+            Dibujado sobre el plano · {pivots.length + zonas.length} elemento{pivots.length + zonas.length === 1 ? "" : "s"}
+            {pivots.length + zonas.length > 0
+              ? ` · ${[...pivots, ...zonas].reduce((a, e) => a + (Number(e.ha) || 0), 0).toFixed(2)} ha`
+              : ""}
           </p>
           {pivots.length === 0 && zonas.length === 0 && (
             <p className="text-[11px] text-stone-600 leading-snug">
-              Todavía no hay nada dibujado. Usa 📐 para medir una superficie o ◎ para marcar un pívot.
+              Todavía no hay nada dibujado. Usa 📐 para delimitar una superficie con vértices, o ◎ para poner un círculo.
+              Después puedes ponerle el nombre que quieras y decir si es un pívot, una balsa, una nave o lo que sea.
             </p>
           )}
-          {pivots.map(pv => (
-            <div key={pv.id} className="py-2 border-t border-stone-200 first:border-0">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-sm bg-blue-500 flex-shrink-0" />
-                <input type="text" value={pv.nombre || ""}
-                  onChange={(e) => saveDoc({ ...pv, nombre: e.target.value })}
-                  className="text-xs font-semibold text-emerald-950 bg-transparent outline-none flex-1 min-w-0" />
-                <span className="text-xs font-mono font-bold text-emerald-950">{(Number(pv.ha) || 0).toFixed(2)} ha</span>
-                <button onClick={async () => { if (confirm("¿Borrar este pívot?")) { await deleteDoc(pv.id); showToast("Pívot borrado"); } }}
-                  className="text-rose-700 text-xs font-bold px-1">✕</button>
+          {[...pivots, ...zonas].map(el => {
+            const esCirculo = el.type === "pivot";
+            const cl = claseDibujo(el.clase || (esCirculo ? "pivot" : "parcela"));
+            return (
+              <div key={el.id} className="py-2.5 border-t border-stone-200 first:border-0">
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-sm flex-shrink-0"
+                    style={{ background: el.cultivo ? pacCultivo(el.cultivo).c : cl.c }} />
+                  <input type="text" value={el.nombre || ""}
+                    onChange={(e) => saveDoc({ ...el, nombre: e.target.value })}
+                    placeholder="Ponle nombre"
+                    className="text-sm font-bold text-emerald-950 bg-transparent outline-none flex-1 min-w-0 border-b border-dashed border-stone-300 pb-0.5" />
+                  <span className="text-xs font-mono font-bold text-emerald-950 flex-shrink-0">
+                    {(Number(el.ha) || 0).toFixed(2)} ha
+                  </span>
+                  <button onClick={async () => {
+                      if (confirm(`¿Borrar "${el.nombre || "esto"}"?`)) { await deleteDoc(el.id); showToast("Borrado"); }
+                    }}
+                    className="text-rose-700 text-sm font-bold px-1 flex-shrink-0">✕</button>
+                </div>
+
+                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                  <select value={el.clase || (esCirculo ? "pivot" : "parcela")}
+                    onChange={(e) => saveDoc({ ...el, clase: e.target.value })}
+                    className="bg-stone-100 rounded-lg px-2 py-1 text-[11px] font-semibold text-emerald-950 outline-none">
+                    {CLASES_DIBUJO.map(c => <option key={c.v} value={c.v}>{c.icono} {c.l}</option>)}
+                  </select>
+                  <select value={el.cultivo || ""}
+                    onChange={(e) => saveDoc({ ...el, cultivo: e.target.value })}
+                    className="bg-stone-100 rounded-lg px-2 py-1 text-[11px] font-semibold text-emerald-950 outline-none">
+                    {PAC_CULTIVOS.map(c => <option key={c.v} value={c.v}>{c.l}</option>)}
+                  </select>
+                  {!esCirculo && (
+                    <span className="text-[10px] text-stone-600">{el.perimetro} m de perímetro</span>
+                  )}
+                </div>
+
+                {esCirculo && (
+                  <>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-stone-600 w-12">Radio</span>
+                      <input type="range" min="20" max="900" step="5" value={el.r}
+                        onChange={(e) => {
+                          const r = Number(e.target.value);
+                          saveDoc({ ...el, r, ha: haCirculo(r, arcoDe(el)) });
+                        }}
+                        className="flex-1 accent-blue-600" />
+                      <input type="number" min="5" value={el.r}
+                        onChange={(e) => {
+                          const r = Number(e.target.value) || 5;
+                          saveDoc({ ...el, r, ha: haCirculo(r, arcoDe(el)) });
+                        }}
+                        className="w-16 bg-stone-100 rounded-lg px-2 py-1 text-xs font-mono font-bold text-emerald-950 text-right outline-none" />
+                      <span className="text-[10px] text-stone-600 font-bold w-3">m</span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-stone-600 w-12">Abarca</span>
+                      {[360, 270, 180, 90].map(a => (
+                        <button key={a}
+                          onClick={() => saveDoc({ ...el, arco: a, ha: haCirculo(el.r, a) })}
+                          className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition ${
+                            arcoDe(el) === a ? "bg-blue-600 text-white" : "bg-stone-100 text-stone-700"
+                          }`}>
+                          {a === 360 ? "Entero" : a === 270 ? "3/4" : a === 180 ? "Medio" : "1/4"}
+                        </button>
+                      ))}
+                      <input type="number" min="10" max="360" value={arcoDe(el)}
+                        onChange={(e) => {
+                          const a = Math.max(10, Math.min(360, Number(e.target.value) || 360));
+                          saveDoc({ ...el, arco: a, ha: haCirculo(el.r, a) });
+                        }}
+                        className="w-14 bg-stone-100 rounded-lg px-2 py-1 text-xs font-mono font-bold text-emerald-950 text-right outline-none" />
+                      <span className="text-[10px] text-stone-600 font-bold">grados</span>
+                    </div>
+
+                    {arcoDe(el) < 360 && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-stone-600 w-12">Gira</span>
+                        <input type="range" min="0" max="355" step="5" value={Number(el.desde) || 0}
+                          onChange={(e) => saveDoc({ ...el, desde: Number(e.target.value) })}
+                          className="flex-1 accent-blue-600" />
+                        <span className="w-16 text-right text-xs font-mono font-bold text-emerald-950">
+                          {Number(el.desde) || 0}°
+                        </span>
+                        <span className="text-[10px] text-stone-600 font-bold w-3"> </span>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                <input type="text" value={el.notes || ""}
+                  onChange={(e) => saveDoc({ ...el, notes: e.target.value })}
+                  placeholder="Nota"
+                  className="w-full bg-transparent outline-none text-[11px] text-stone-700 mt-1.5 placeholder:text-stone-400" />
               </div>
-              <div className="flex items-center gap-2 mt-1.5">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-stone-600">Radio</span>
-                <input type="range" min="30" max="900" step="5" value={pv.r}
-                  onChange={(e) => {
-                    const r = Number(e.target.value);
-                    saveDoc({ ...pv, r, ha: Math.PI * r * r / 10000 });
-                  }}
-                  className="flex-1 accent-blue-600" />
-                <input type="number" min="10" value={pv.r}
-                  onChange={(e) => {
-                    const r = Number(e.target.value) || 10;
-                    saveDoc({ ...pv, r, ha: Math.PI * r * r / 10000 });
-                  }}
-                  className="w-16 bg-stone-100 rounded-lg px-2 py-1 text-xs font-mono font-bold text-emerald-950 text-right outline-none" />
-                <span className="text-[10px] text-stone-600 font-bold">m</span>
-              </div>
-            </div>
-          ))}
-          {zonas.map(z2 => (
-            <div key={z2.id} className="flex items-center gap-2 py-1.5 border-t border-stone-200">
-              <span className="w-2.5 h-2.5 rounded-sm bg-orange-500 flex-shrink-0" />
-              <span className="text-xs text-emerald-950 flex-1 truncate">{z2.nombre} · {z2.perimetro} m</span>
-              <span className="text-xs font-mono font-bold text-emerald-950">{(Number(z2.ha) || 0).toFixed(2)} ha</span>
-              <button onClick={async () => { if (confirm("¿Borrar esta medición?")) { await deleteDoc(z2.id); showToast("Medición borrada"); } }}
-                className="text-rose-700 text-xs font-bold px-1">✕</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </motion.div>
