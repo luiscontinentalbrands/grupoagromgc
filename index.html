@@ -9772,7 +9772,10 @@ function mensajeAuth(code) {
     "auth/network-request-failed": "Sin conexión con el servidor",
     "auth/email-already-in-use": "Ese usuario ya existe",
     "auth/weak-password": "La contraseña debe tener 6 caracteres o más",
-    "auth/requires-recent-login": "Vuelve a entrar para poder cambiarla"
+    "auth/requires-recent-login": "Vuelve a entrar para poder cambiarla",
+    "auth/operation-not-allowed": "Falta activar Email/Password en Firebase (Authentication → Sign-in method)",
+    "auth/missing-password": "Escribe la contraseña",
+    "auth/internal-error": "Error del servidor. Comprueba la configuración de Firebase"
   };
   return m[code] || "No se ha podido completar la operación";
 }
@@ -10590,7 +10593,7 @@ export default function App() {
               {view.name === "new-registro" && <RegistroForm key={"reg-" + view.regType} regType={view.regType} setView={setView} saveDoc={saveDoc} settings={settings} showToast={showToast} initial={view.initial} />}
               {view.name === "new-stock" && <StockForm key={"stock-" + view.stockType} stockType={view.stockType} setView={setView} saveDoc={saveDoc} settings={settings} showToast={showToast} initial={view.initial} />}
               {view.name === "calendar" && <CalendarView key="cal" docs={docs} setView={setView} settings={settings} showToast={showToast} saveDoc={saveDoc} />}
-              {view.name === "new-plan" && <PlanForm key={view.initial ? "plan-" + view.initial.id : "plan-new"} setView={setView} saveDoc={saveDoc} deleteDoc={deleteDoc} settings={settings} showToast={showToast} initial={view.initial} />}
+              {view.name === "new-plan" && <PlanForm key={view.initial ? "plan-" + view.initial.id : "plan-new"} setView={setView} saveDoc={saveDoc} deleteDoc={deleteDoc} settings={settings} showToast={showToast} initial={view.initial} docs={docs} />}
               {view.name === "mill" && <MillView key="mill" docs={docs} setView={setView} settings={settings} showToast={showToast} role={role} perms={perms} />}
               {view.name === "new-mill" && (
                 view.millType === "entrada" ? <EntradaForm key={view.initial ? "ent-" + view.initial.id : "ent-new"} setView={setView} saveDoc={saveDoc} deleteDoc={deleteDoc} settings={settings} showToast={showToast} initial={view.initial} docs={docs} /> :
@@ -10602,6 +10605,9 @@ export default function App() {
               {view.name === "history" && <HistoryView key="hist" docs={docs} setView={setView} />}
               {view.name === "detail" && <DetailView key="det" doc={view.doc} setView={setView} settings={settings} saveDoc={saveDoc} deleteDoc={deleteDoc} showToast={showToast} />}
               {view.name === "settings" && <SettingsView key="set" settings={settings} saveSettings={saveSettings} setView={setView} syncAllNow={syncAllNow} docs={docs} showToast={showToast} importDocs={importDocs} role={role} onLogout={handleLogout} currentUser={currentUser} isOnline={isOnline} />}
+              {view.name === "parcelas" && <ParcelasView key="parc" docs={docs} setView={setView} saveDoc={saveDoc} settings={settings} showToast={showToast} isOnline={isOnline} />}
+              {view.name === "mapa-parcelas" && <MapaParcelas key="mapa" docs={docs} setView={setView} saveDoc={saveDoc} deleteDoc={deleteDoc} settings={settings} showToast={showToast} isOnline={isOnline} />}
+              {view.name === "parcela" && <ParcelaForm key={"pcl-" + parcelaId(view.parcela)} parcela={view.parcela} docs={docs} setView={setView} saveDoc={saveDoc} settings={settings} showToast={showToast} isOnline={isOnline} />}
               {view.name === "users" && <UsersView key="users" setView={setView} currentUser={currentUser} showToast={showToast} isOnline={isOnline} />}
             </AnimatePresence>
           )}
@@ -10810,6 +10816,25 @@ function HomeView({ docs, setView, settings, role, perms }) {
         </p>
       </div>
 
+      )}
+
+      {showCalendar && (
+      <div className="mb-5">
+        <p className="text-xs font-bold uppercase tracking-wider text-stone-700 mb-2 px-1 flex items-center gap-1.5">
+          <span>🗺️</span> Parcelas de la PAC
+        </p>
+        <button onClick={() => setView({ name: "parcelas" })}
+          className="w-full bg-gradient-to-br from-lime-700 to-lime-900 rounded-xl p-3 flex items-center gap-3 active:scale-[0.98] transition shadow-md text-amber-50 mb-4">
+          <span className="text-3xl">🗺️</span>
+          <div className="text-left flex-1 min-w-0">
+            <p style={{ fontFamily: "'Fraunces', serif" }} className="font-bold text-base leading-tight">
+              {PARCELAS_PAC.length} parcelas · plan de siembra
+            </p>
+            <p className="text-[11px] text-amber-50/70 leading-tight">Superficie y regadío oficial · qué se siembra en cada una</p>
+          </div>
+          <ChevronRight size={18} className="text-amber-50/70 flex-shrink-0" />
+        </button>
+      </div>
       )}
 
       {showCalendar && (
@@ -11795,7 +11820,7 @@ function StockForm({ stockType, setView, saveDoc, settings, showToast, initial }
 // =============================================================
 // PLAN FORM — crop planning with editable timeline
 // =============================================================
-function PlanForm({ setView, saveDoc, deleteDoc, settings, showToast, initial }) {
+function PlanForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, docs }) {
   const [doc, setDoc] = useState(initial || {
     id: newId(),
     kind: "plan",
@@ -11819,6 +11844,11 @@ function PlanForm({ setView, saveDoc, deleteDoc, settings, showToast, initial })
   });
   const [expandedEvent, setExpandedEvent] = useState(null);
   const [confirmDel, setConfirmDel] = useState(false);
+
+  // Parcela de la PAC a la que pertenece este plan, si la hay
+  const parcelaVinculada = doc.linkedParcelaId && Array.isArray(PARCELAS_PAC)
+    ? PARCELAS_PAC.find(p => parcelaId(p) === doc.linkedParcelaId)
+    : null;
 
   const update = (k, v) => setDoc((d) => ({ ...d, [k]: v }));
   const updateEvent = (id, patch) => setDoc((d) => ({
@@ -11877,6 +11907,21 @@ function PlanForm({ setView, saveDoc, deleteDoc, settings, showToast, initial })
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
       <FormHeader title={initial ? "Editar plan" : "Nuevo plan de cultivo"} onBack={() => setView({ name: "calendar" })} />
+
+      {parcelaVinculada && (
+        <button onClick={() => setView({ name: "parcela", parcela: parcelaVinculada })}
+          className="w-full bg-lime-50 border border-lime-300 rounded-xl p-3 mb-3 flex items-center gap-2.5 active:bg-lime-100 transition text-left">
+          <span className="text-xl">🗺️</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-bold text-lime-900">Parcela de la PAC</p>
+            <p className="text-[11px] text-lime-800 leading-snug truncate">
+              {doc.plotName || `Polígono ${parcelaVinculada.po} · Parcela ${parcelaVinculada.pa}`}
+              {doc.areaHa ? ` · ${doc.areaHa} ha` : ""}
+            </p>
+          </div>
+          <ChevronRight size={16} className="text-lime-700 flex-shrink-0" />
+        </button>
+      )}
 
       <div className="bg-gradient-to-br from-green-700 to-emerald-900 rounded-2xl p-4 mb-4 text-amber-50 shadow-md">
         <div className="flex items-center gap-3">
@@ -17534,6 +17579,1224 @@ function UsersView({ setView, currentUser, showToast, isOnline }) {
           </div>
         </div>
       )}
+    </motion.div>
+  );
+}
+
+const PARCELAS_PAC = [{"f":"Finca Batanejo SA","mu":44,"po":18,"pa":115},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":38},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":39},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":57},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":58},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":1},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":2},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":3},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":4},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":5},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":7},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":8},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":9},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":10},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":11},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":12},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":13},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":14},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":15},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":16},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":17},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":18},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":19},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":40},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":41},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":42},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":43},{"f":"Finca La China SA","mu":60,"po":22,"pa":18},{"f":"Finca La China SA","mu":60,"po":22,"pa":19},{"f":"Finca La China SA","mu":60,"po":22,"pa":20},{"f":"Finca La China SA","mu":60,"po":22,"pa":21},{"f":"Finca La China SA","mu":60,"po":22,"pa":23},{"f":"Finca La China SA","mu":60,"po":22,"pa":24},{"f":"Finca La China SA","mu":60,"po":22,"pa":56},{"f":"Finca La China SA","mu":60,"po":22,"pa":70},{"f":"Finca La China SA","mu":60,"po":22,"pa":71},{"f":"Finca La China SA","mu":60,"po":23,"pa":1},{"f":"Finca La China SA","mu":60,"po":23,"pa":2},{"f":"Finca La China SA","mu":60,"po":23,"pa":3},{"f":"Finca La China SA","mu":60,"po":23,"pa":4},{"f":"Finca La China SA","mu":60,"po":23,"pa":5},{"f":"Finca La China SA","mu":60,"po":23,"pa":9},{"f":"Finca La China SA","mu":138,"po":6,"pa":139},{"f":"Finca Tamujoso","mu":146,"po":7,"pa":312},{"f":"Finca Tamujoso","mu":146,"po":15,"pa":1},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":7},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":8},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":10},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":11},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":12},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":13},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":14},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":15}];
+
+// =============================================================
+// PARCELAS PAC — plan de siembra y riego por parcela
+// =============================================================
+const PAC_CULTIVOS = [
+  { v:"",           l:"— Sin asignar —",  c:"#CFC7B4" },
+  { v:"trigo",      l:"Trigo",            c:"#D9A441" },
+  { v:"cebada",     l:"Cebada",           c:"#C98B2E" },
+  { v:"avena",      l:"Avena",            c:"#B5762A" },
+  { v:"avena-veza", l:"Avena-veza",       c:"#8E6B3A" },
+  { v:"veza",       l:"Veza",             c:"#7A8B3F" },
+  { v:"triticale",  l:"Triticale",        c:"#A98C46" },
+  { v:"maiz",       l:"Maíz",             c:"#E3B505" },
+  { v:"girasol",    l:"Girasol",          c:"#F2C14E" },
+  { v:"garbanzo",   l:"Garbanzo",         c:"#9C8C5E" },
+  { v:"alfalfa",    l:"Alfalfa",          c:"#4E7A3A" },
+  { v:"pradera",    l:"Pradera / pasto",  c:"#5E8C4A" },
+  { v:"almendro",   l:"Almendro",         c:"#8C6A8E" },
+  { v:"olivar",     l:"Olivar",           c:"#6E7B52" },
+  { v:"dehesa",     l:"Dehesa / encinar", c:"#4A6B4A" },
+  { v:"barbecho",   l:"Barbecho",         c:"#9A9384" },
+  { v:"alquiler",   l:"En alquiler",      c:"#7D6E8C" },
+  { v:"sin-cultivar", l:"Sin cultivar",   c:"#B0A997" }
+];
+const PAC_RIEGOS = [
+  { v:"pivot",     l:"Pívot",           c:"#3D8BCD" },
+  { v:"pie",       l:"Riego a pie",     c:"#5FB3A1" },
+  { v:"goteo",     l:"Goteo",           c:"#7A5FCD" },
+  { v:"canones",   l:"Cañones",         c:"#CD8B3D" },
+  { v:"cobertura", l:"Cobertura total", c:"#4FA05C" },
+  { v:"otro",      l:"Otro sistema",    c:"#9A9384" }
+];
+const USOS_SIGPAC = {TA:"Tierra arable",PA:"Pasto arbolado",PR:"Pasto arbustivo",PS:"Pastizal",
+  FO:"Forestal",OV:"Olivar",FY:"Frutal",VI:"Viñedo",IM:"Improductivo",CA:"Camino",
+  ZU:"Zona urbana",AG:"Agua",ED:"Edificación",TH:"Huerta"};
+
+const pacCultivo = v => PAC_CULTIVOS.find(c=>c.v===v) || PAC_CULTIVOS[0];
+
+// A qué plantilla del calendario corresponde cada cultivo de la parcela.
+// El trigo y el maíz cambian según haya riego o no.
+const plantillaDeCultivo = (cultivo, conRiego) => ({
+  trigo:     conRiego ? "Trigo regadío" : "Trigo de secano",
+  maiz:      "Maíz regadío",
+  cebada:    "Cebada",
+  avena:     "Avena",
+  girasol:   "Girasol",
+  veza:      "Veza grano",
+  "avena-veza": "Veza forraje",
+  garbanzo:  "Garbanzo"
+}[cultivo] || "");
+const pacRiego   = v => PAC_RIEGOS.find(r=>r.v===v) || { l:"Secano", c:"#C9C2AF" };
+const parcelaId  = p => `parcela-${p.mu}-${p.po}-${p.pa}`;
+const campanaActual = () => {
+  const h = new Date();
+  const a = h.getMonth() >= 6 ? h.getFullYear() : h.getFullYear()-1;
+  return `${a}/${a+1}`;
+};
+
+const SIGPAC_API = (p) => `https://sigpac-hubcloud.es/servicioconsultassigpac/query/recinfoparc/6/${p.mu}/0/0/${p.po}/${p.pa}.json`;
+
+// Trae de SIGPAC la superficie y el regadío oficial de una parcela
+async function traerSigpac(p) {
+  const r = await fetch(SIGPAC_API(p));
+  if (!r.ok) throw new Error("SIGPAC " + r.status);
+  const datos = await r.json();
+  let ha = 0, haRegadio = 0;
+  const recintos = datos.map((rec) => {
+    const crudo = rec.coef_regadio ?? rec.coefRegadio ?? 0;
+    let coef = Number(String(crudo).replace(",", ".")) || 0;
+    if (coef > 1) coef = coef / 100;
+    coef = Math.max(0, Math.min(1, coef));
+    const sup = Number(rec.superficie) || 0;
+    ha += sup; haRegadio += sup * coef;
+    return { rec: rec.recinto, sup, uso: rec.uso_sigpac || "", coef };
+  });
+  return { ha, haRegadio, recintos };
+}
+
+const haRegadaPlan = (doc) => Object.values((doc && doc.riego) || {}).reduce((s,v)=>s+(Number(v)||0), 0);
+
+
+// =============================================================
+// MAPA DE PARCELAS — ortofoto del IGN con los recintos de SIGPAC
+// El dibujo se hace a mano sobre el DOM: React solo pone el marco.
+// =============================================================
+const TILE_PNOA = (z,x,y) => `https://www.ign.es/wmts/pnoa-ma?layer=OI.OrthoimageCoverage&style=default&tilematrixset=GoogleMapsCompatible&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image/jpeg&TileMatrix=${z}&TileCol=${x}&TileRow=${y}`;
+const NS_SVG = "http://www.w3.org/2000/svg";
+const VUELTA_M = 40075016.686;
+
+const aMercator = (lon, lat) => {
+  const s = Math.sin(lat * Math.PI / 180);
+  return [lon / 360 + 0.5, 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)];
+};
+const latDesde = (y) => (2 * Math.atan(Math.exp((0.5 - y) * 2 * Math.PI)) - Math.PI / 2) * 180 / Math.PI;
+const metrosAFraccion = (m, y) => m / (VUELTA_M * Math.cos(latDesde(y) * Math.PI / 180));
+const fraccionAMetros = (d, y) => d * VUELTA_M * Math.cos(latDesde(y) * Math.PI / 180);
+
+function leerAnillos(wkt) {
+  if (!wkt) return [];
+  const anillos = [];
+  const grupos = wkt.replace(/^\s*(MULTIPOLYGON|POLYGON)\s*/i, "").match(/\(([-0-9.,\s]+)\)/g) || [];
+  for (const g of grupos) {
+    const pts = g.replace(/[()]/g, "").split(",").map(par => {
+      const [a, b] = par.trim().split(/\s+/).map(Number);
+      return [a, b];
+    }).filter(p => isFinite(p[0]) && isFinite(p[1]));
+    if (pts.length > 2) anillos.push(pts.map(([lo, la]) => aMercator(lo, la)));
+  }
+  return anillos;
+}
+
+// Superficie sobre el elipsoide, en hectáreas
+function superficieHa(pts) {
+  if (!pts || pts.length < 3) return 0;
+  const R = 6378137, rad = Math.PI / 180;
+  const ll = pts.map(([x, y]) => [(x - 0.5) * 360, latDesde(y)]);
+  let suma = 0;
+  for (let i = 0; i < ll.length; i++) {
+    const [lo1, la1] = ll[i], [lo2, la2] = ll[(i + 1) % ll.length];
+    suma += (lo2 - lo1) * rad * (2 + Math.sin(la1 * rad) + Math.sin(la2 * rad));
+  }
+  return Math.abs(suma * R * R / 2) / 10000;
+}
+function perimetroMetros(pts) {
+  if (!pts || pts.length < 2) return 0;
+  let d = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const ym = (a[1] + b[1]) / 2;
+    d += Math.hypot(fraccionAMetros(b[0] - a[0], ym), fraccionAMetros(b[1] - a[1], ym));
+  }
+  return d;
+}
+function puntoDentro(p, anillo) {
+  let d = false;
+  for (let i = 0, j = anillo.length - 1; i < anillo.length; j = i++) {
+    const [xi, yi] = anillo[i], [xj, yj] = anillo[j];
+    if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) d = !d;
+  }
+  return d;
+}
+
+const COLOR_FINCA = {
+  "Finca Batanejo SA": "#FFD34D",
+  "Finca Tamujoso": "#FF7A6B",
+  "Finca La China SA": "#7BE38A"
+};
+
+function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, isOnline }) {
+  const cajaRef = useRef(null);
+  const tilesRef = useRef(null);
+  const svgRef = useRef(null);
+  const est = useRef({
+    geo: {}, vista: { z: 15, cx: 0.5, cy: 0.5 }, finca: "todas",
+    herramienta: null, centroTmp: null, previo: null, vertices: [], puntero: null,
+    sel: null, pinta: "cultivo"
+  });
+
+  const [cargando, setCargando] = useState(true);
+  const [progreso, setProgreso] = useState(0);
+  const [finca, setFinca] = useState("todas");
+  const [herramienta, setHerramienta] = useState(null);
+  const [medida, setMedida] = useState("");
+  const [resumen, setResumen] = useState("");
+  const [pinta, setPinta] = useState("cultivo");
+
+  const planes = {};
+  docs.filter(d => d.kind === "parcela" && d.type === "plan").forEach(d => { planes[d.id] = d; });
+  const pivots = docs.filter(d => d.kind === "parcela" && d.type === "pivot");
+  const zonas  = docs.filter(d => d.kind === "parcela" && d.type === "zona");
+
+  // El dibujo se engancha una sola vez, así que tiene que leer de aquí
+  // y no de las variables del momento en que se enganchó.
+  const vivos = useRef({ planes, pivots, zonas, saveDoc, setView, settings, showToast });
+  vivos.current = { planes, pivots, zonas, saveDoc, setView, settings, showToast };
+
+  // ---- descarga de la geometría ----
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      let hechas = 0;
+      for (let i = 0; i < PARCELAS_PAC.length; i += 5) {
+        if (!vivo) return;
+        await Promise.all(PARCELAS_PAC.slice(i, i + 5).map(async (p) => {
+          try {
+            const r = await fetch(SIGPAC_API(p));
+            if (!r.ok) throw 0;
+            const datos = await r.json();
+            const recintos = datos.map(rec => {
+              const crudo = rec.coef_regadio ?? rec.coefRegadio ?? 0;
+              let coef = Number(String(crudo).replace(",", ".")) || 0;
+              if (coef > 1) coef = coef / 100;
+              return { sup: Number(rec.superficie) || 0, coef: Math.max(0, Math.min(1, coef)),
+                       anillos: leerAnillos(rec.wkt) };
+            }).filter(r => r.anillos.length);
+            if (recintos.length) est.current.geo[parcelaId(p)] = { p, recintos };
+          } catch (e) {}
+          hechas++;
+          if (vivo) setProgreso(Math.round(hechas / PARCELAS_PAC.length * 100));
+        }));
+      }
+      if (!vivo) return;
+      setCargando(false);
+      setTimeout(() => { encuadrar(); }, 60);
+    })();
+    return () => { vivo = false; };
+  }, []);
+
+  // ---- dibujo ----
+  const visibles = () => Object.values(est.current.geo)
+    .filter(g => est.current.finca === "todas" || g.p.f === est.current.finca);
+
+  const encuadrar = () => {
+    const l = visibles();
+    const caja = cajaRef.current;
+    if (!l.length || !caja) return;
+    let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+    l.forEach(g => g.recintos.forEach(r => r.anillos.forEach(a => a.forEach(([x, y]) => {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }))));
+    const esc = Math.min(caja.clientWidth / Math.max(x1 - x0, 1e-7), caja.clientHeight / Math.max(y1 - y0, 1e-7)) * 0.82;
+    est.current.vista = { z: Math.max(6, Math.min(19, Math.log2(esc / 256))), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
+    pintar();
+  };
+
+  const pintarRef = useRef(null);
+  const pintar = () => {
+    const caja = cajaRef.current, cont = tilesRef.current, svg = svgRef.current;
+    if (!caja || !cont || !svg) return;
+    const W = caja.clientWidth, H = caja.clientHeight;
+    const v = est.current.vista, esc = Math.pow(2, v.z) * 256;
+    const px = x => (x - v.cx) * esc + W / 2, py = y => (y - v.cy) * esc + H / 2;
+
+    // ortofoto
+    const z = Math.max(0, Math.min(19, Math.round(v.z))), n = Math.pow(2, z), tam = esc / n;
+    const quiero = new Set();
+    for (let tx = Math.floor((v.cx - W / 2 / esc) * n); tx <= Math.floor((v.cx + W / 2 / esc) * n); tx++)
+      for (let ty = Math.floor((v.cy - H / 2 / esc) * n); ty <= Math.floor((v.cy + H / 2 / esc) * n); ty++) {
+        if (tx < 0 || ty < 0 || tx >= n || ty >= n) continue;
+        quiero.add(`${z}/${tx}/${ty}`);
+      }
+    [...cont.children].forEach(i => { if (!quiero.has(i.dataset.k)) i.remove(); });
+    quiero.forEach(k => {
+      const [tz, tx, ty] = k.split("/").map(Number);
+      let img = [...cont.children].find(i => i.dataset.k === k);
+      if (!img) {
+        img = document.createElement("img");
+        img.dataset.k = k; img.src = TILE_PNOA(tz, tx, ty);
+        img.style.position = "absolute"; img.draggable = false;
+        img.onerror = () => { img.style.visibility = "hidden"; };
+        cont.appendChild(img);
+      }
+      img.style.width = img.style.height = tam + "px";
+      img.style.left = px(tx / n) + "px"; img.style.top = py(ty / n) + "px";
+    });
+
+    // capa de dibujo
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const nodo = (tag, attrs, texto) => {
+      const el = document.createElementNS(NS_SVG, tag);
+      for (const a in attrs) if (attrs[a] !== undefined && attrs[a] !== null) el.setAttribute(a, attrs[a]);
+      if (texto !== undefined) el.textContent = texto;
+      svg.appendChild(el); return el;
+    };
+    const etiquetas = [];
+
+    const { planes: planesVivos, pivots: pivotsVivos, zonas: zonasVivas } = vivos.current;
+
+    visibles().forEach(g => {
+      const plan = planesVivos[parcelaId(g.p)] || {};
+      const cult = plan.cultivo ? pacCultivo(plan.cultivo).c : null;
+      const sel = est.current.sel === parcelaId(g.p);
+      g.recintos.forEach(r => {
+        let relleno, trazo;
+        if (est.current.pinta === "riego") {
+          relleno = r.coef > 0 ? `rgba(61,139,205,${(0.35 + 0.45 * r.coef).toFixed(2)})` : "rgba(196,180,140,.22)";
+          trazo = r.coef > 0 ? "#2E6FA8" : "#8A7A50";
+        } else {
+          relleno = cult ? cult + "55" : "rgba(255,255,255,.10)";
+          trazo = cult || COLOR_FINCA[g.p.f] || "#FFD34D";
+        }
+        if (sel) trazo = "#fff";
+        r.anillos.forEach(a => nodo("path", {
+          d: a.map(([x, y], i) => (i ? "L" : "M") + px(x).toFixed(1) + " " + py(y).toFixed(1)).join(" ") + " Z",
+          fill: relleno, stroke: trazo, "stroke-width": sel ? 3 : 1.6
+        }));
+      });
+      if (v.z > 13.2) {
+        const t = g.recintos.flatMap(r => r.anillos.flat());
+        const cx = px(t.reduce((s, q) => s + q[0], 0) / t.length), cy = py(t.reduce((s, q) => s + q[1], 0) / t.length);
+        if (cx > -40 && cx < W + 40 && cy > -20 && cy < H + 20) {
+          etiquetas.push({ x: cx, y: cy, t: `${g.p.po}/${g.p.pa}` });
+          const ha = g.recintos.reduce((s, r) => s + r.sup, 0);
+          etiquetas.push({ x: cx, y: cy + 12, t: `${ha.toFixed(1)} ha`, peq: true });
+        }
+      }
+    });
+
+    // zonas medidas
+    zonasVivas.forEach(z2 => {
+      const pts = (z2.pts || []).map(([x, y]) => [px(x), py(y)]);
+      if (pts.length < 3) return;
+      const col = z2.cultivo ? pacCultivo(z2.cultivo).c : "#E8734A";
+      nodo("path", { d: pts.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ") + " Z",
+        fill: col + "40", stroke: col, "stroke-width": 2.4 });
+      if (v.z > 12.5) {
+        const cx = pts.reduce((s, q) => s + q[0], 0) / pts.length, cy = pts.reduce((s, q) => s + q[1], 0) / pts.length;
+        etiquetas.push({ x: cx, y: cy, t: z2.nombre || "Zona" });
+        etiquetas.push({ x: cx, y: cy + 12, t: `${superficieHa(z2.pts).toFixed(2)} ha`, peq: true });
+      }
+    });
+
+    // pívots
+    if (pivotsVivos.length) console.log("[Plano] Pintando", pivotsVivos.length, "pívots y", zonasVivas.length, "zonas");
+    pivotsVivos.forEach(pv => {
+      const rp = metrosAFraccion(pv.r, pv.cy) * esc, x = px(pv.cx), y = py(pv.cy);
+      if (x < -rp - 60 || x > W + rp + 60 || y < -rp - 60 || y > H + rp + 60) return;
+      nodo("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: Math.max(rp, 3).toFixed(1),
+        fill: "rgba(61,139,205,.26)", stroke: "#3D8BCD", "stroke-width": 2.2, "stroke-dasharray": "7 4" });
+      nodo("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: 4, fill: "#3D8BCD", stroke: "#fff", "stroke-width": 1.5 });
+      if (v.z > 12.5) {
+        etiquetas.push({ x, y: y - 9, t: pv.nombre || "Pívot" });
+        etiquetas.push({ x, y: y + 18, t: `${(Math.PI * pv.r * pv.r / 10000).toFixed(1)} ha`, peq: true });
+      }
+    });
+
+    // lo que se está marcando ahora
+    const e = est.current;
+    if (e.centroTmp) {
+      const x = px(e.centroTmp[0]), y = py(e.centroTmp[1]);
+      nodo("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: 6, fill: "#fff", stroke: "#3D8BCD", "stroke-width": 3 });
+      if (e.previo) {
+        const rp = metrosAFraccion(e.previo.r, e.centroTmp[1]) * esc;
+        nodo("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: Math.max(rp, 3).toFixed(1),
+          fill: "rgba(61,139,205,.18)", stroke: "#fff", "stroke-width": 2.5, "stroke-dasharray": "6 4" });
+      }
+    }
+    if (e.vertices.length) {
+      const pts = e.vertices.map(([x, y]) => [px(x), py(y)]);
+      const conP = e.puntero ? pts.concat([[e.puntero.px, e.puntero.py]]) : pts;
+      if (conP.length > 2)
+        nodo("path", { d: conP.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ") + " Z",
+          fill: "rgba(232,115,74,.22)", stroke: "#fff", "stroke-width": 2.5, "stroke-dasharray": "7 4" });
+      else if (conP.length === 2)
+        nodo("line", { x1: conP[0][0].toFixed(1), y1: conP[0][1].toFixed(1), x2: conP[1][0].toFixed(1), y2: conP[1][1].toFixed(1),
+          stroke: "#fff", "stroke-width": 2.5, "stroke-dasharray": "7 4" });
+      pts.forEach((q, i) => nodo("circle", { cx: q[0].toFixed(1), cy: q[1].toFixed(1), r: i === 0 ? 7 : 5,
+        fill: i === 0 ? "#E8734A" : "#fff", stroke: "#fff", "stroke-width": 2.5 }));
+    }
+
+    etiquetas.forEach(et => {
+      const t = nodo("text", { x: et.x.toFixed(0), y: et.y.toFixed(0), class: "etqMapa" }, et.t);
+      if (et.peq) t.setAttribute("style", "font-size:9px");
+    });
+
+    // resumen de abajo
+    const l = visibles();
+    const haTotal = l.reduce((s, g) => s + g.recintos.reduce((a, r) => a + r.sup, 0), 0);
+    if (est.current.pinta === "riego") {
+      const haAgua = l.reduce((s, g) => s + g.recintos.reduce((a, r) => a + r.sup * r.coef, 0), 0);
+      setResumen(haAgua > 0.01
+        ? `${haAgua.toFixed(1)} ha de regadío · ${(haTotal - haAgua).toFixed(1)} ha de secano`
+        : `SIGPAC no declara regadío en estas ${l.length} parcelas`);
+    } else {
+      setResumen(`${haTotal.toFixed(1)} ha · ${l.length} parcelas`);
+    }
+  };
+
+  pintarRef.current = pintar;
+
+  // ---- interacción ----
+  useEffect(() => {
+    const pintar = (...a) => pintarRef.current && pintarRef.current(...a);
+    const caja = cajaRef.current;
+    if (!caja) return;
+    let arrastra = false, movido = false, lx = 0, ly = 0;
+    const aFraccion = (cx, cy) => {
+      const v = est.current.vista, esc = Math.pow(2, v.z) * 256;
+      return [(cx - caja.clientWidth / 2) / esc + v.cx, (cy - caja.clientHeight / 2) / esc + v.cy];
+    };
+    const esBoton = (ev) => !!(ev.target && ev.target.closest && ev.target.closest("button"));
+
+    const abajo = (ev) => {
+      if (esBoton(ev)) return;
+      try { caja.setPointerCapture(ev.pointerId); } catch (e) {}
+      arrastra = true; movido = false; lx = ev.clientX; ly = ev.clientY;
+    };
+    const mover = (ev) => {
+      const e = est.current, r = caja.getBoundingClientRect();
+      if (!arrastra && (e.herramienta === "medir" && e.vertices.length)) {
+        e.puntero = { px: ev.clientX - r.left, py: ev.clientY - r.top };
+        const prueba = e.vertices.concat([aFraccion(e.puntero.px, e.puntero.py)]);
+        if (prueba.length > 2) setMedida(`${superficieHa(prueba).toFixed(2)} ha · ${Math.round(perimetroMetros(prueba))} m`);
+        pintar(); return;
+      }
+      if (!arrastra && e.herramienta === "pivot" && e.centroTmp) {
+        const [wx, wy] = aFraccion(ev.clientX - r.left, ev.clientY - r.top);
+        const d = Math.hypot(wx - e.centroTmp[0], wy - e.centroTmp[1]);
+        e.previo = { r: Math.max(10, Math.round(fraccionAMetros(d, e.centroTmp[1]))) };
+        setMedida(`${e.previo.r} m · ${(Math.PI * e.previo.r * e.previo.r / 10000).toFixed(1)} ha`);
+        pintar(); return;
+      }
+      if (!arrastra) return;
+      if (Math.abs(ev.clientX - lx) + Math.abs(ev.clientY - ly) > 9) movido = true;
+      const v = est.current.vista, esc = Math.pow(2, v.z) * 256;
+      v.cx -= (ev.clientX - lx) / esc; v.cy -= (ev.clientY - ly) / esc;
+      lx = ev.clientX; ly = ev.clientY; pintar();
+    };
+    const arriba = (ev) => {
+      if (esBoton(ev)) { arrastra = false; return; }
+      if (arrastra && !movido) {
+        const r = caja.getBoundingClientRect();
+        const cx = ev.clientX - r.left, cy = ev.clientY - r.top;
+        const e = est.current, mundo = aFraccion(cx, cy);
+
+        console.log("[Plano] Toque · herramienta:", e.herramienta, "· centro marcado:", !!e.centroTmp);
+
+        if (e.herramienta === "medir") {
+          e.vertices.push(mundo);
+          if (e.vertices.length > 2) setMedida(`${superficieHa(e.vertices).toFixed(2)} ha · ${Math.round(perimetroMetros(e.vertices))} m`);
+          else setMedida("Marca al menos tres puntos");
+          pintar();
+        } else if (e.herramienta === "pivot") {
+          // Se coloca y se guarda de una vez; el radio se ajusta luego
+          guardarPivot(mundo[0], mundo[1], 400);
+        } else {
+          for (const g of visibles())
+            for (const rec of g.recintos)
+              for (const a of rec.anillos)
+                if (puntoDentro(mundo, a)) { vivos.current.setView({ name: "parcela", parcela: g.p }); return; }
+        }
+      }
+      arrastra = false;
+    };
+    const rueda = (ev) => {
+      ev.preventDefault();
+      const v = est.current.vista;
+      v.z = Math.max(6, Math.min(19, v.z - Math.sign(ev.deltaY) * 0.35));
+      pintar();
+    };
+
+    caja.addEventListener("pointerdown", abajo);
+    caja.addEventListener("pointermove", mover);
+    caja.addEventListener("pointerup", arriba);
+    caja.addEventListener("pointercancel", () => { arrastra = false; });
+    caja.addEventListener("wheel", rueda, { passive: false });
+    const alRedimensionar = () => pintar();
+    window.addEventListener("resize", alRedimensionar);
+    return () => {
+      caja.removeEventListener("pointerdown", abajo);
+      caja.removeEventListener("pointermove", mover);
+      caja.removeEventListener("pointerup", arriba);
+      caja.removeEventListener("wheel", rueda);
+      window.removeEventListener("resize", alRedimensionar);
+    };
+  }, []);
+
+  useEffect(() => { pintar(); }, [docs, cargando, finca, pinta]);
+
+  const guardarPivot = async (cx, cy, r) => {
+    const v = vivos.current;
+    const doc = {
+      id: "pivot-" + Date.now(), kind: "parcela", type: "pivot",
+      cx, cy, r, nombre: "Pívot " + (v.pivots.length + 1), cultivo: "", notes: "",
+      ha: Math.PI * r * r / 10000,
+      worker: v.settings.workerName || "", farm: est.current.finca === "todas" ? "" : est.current.finca,
+      createdAt: new Date().toISOString(), status: "borrador", sentAt: null
+    };
+    console.log("[Plano] Guardando pívot", doc.id, doc.cx, doc.cy, doc.r);
+    try {
+      await v.saveDoc(doc);
+      console.log("[Plano] Pívot guardado correctamente");
+      v.showToast(`Pívot de ${doc.ha.toFixed(1)} ha guardado`);
+    } catch (err) {
+      console.error("[Plano] Error al guardar el pívot:", err);
+      v.showToast("No se ha podido guardar: " + (err && err.message ? err.message : "error"), "err");
+    }
+    est.current.herramienta = null; est.current.centroTmp = null; est.current.previo = null;
+    setHerramienta(null); setMedida("");
+    pintar();
+  };
+
+  const guardarZona = async () => {
+    const v = vivos.current;
+    const pts = est.current.vertices;
+    if (pts.length < 3) { v.showToast("Hacen falta tres puntos", "err"); return; }
+    const doc = {
+      id: "zona-" + Date.now(), kind: "parcela", type: "zona",
+      pts: pts.slice(), nombre: "Zona " + (v.zonas.length + 1), cultivo: "", notes: "",
+      ha: superficieHa(pts), perimetro: Math.round(perimetroMetros(pts)),
+      worker: v.settings.workerName || "", farm: est.current.finca === "todas" ? "" : est.current.finca,
+      createdAt: new Date().toISOString(), status: "borrador", sentAt: null
+    };
+    console.log("[Plano] Guardando medición", doc.id, doc.pts.length, "vértices");
+    try {
+      await v.saveDoc(doc);
+      v.showToast(`${doc.ha.toFixed(2)} ha guardadas`);
+    } catch (err) {
+      console.error("[Plano] Error al guardar la medición:", err);
+      v.showToast("No se ha podido guardar: " + (err && err.message ? err.message : "error"), "err");
+    }
+    est.current.herramienta = null; est.current.vertices = []; est.current.puntero = null;
+    setHerramienta(null); setMedida("");
+    pintar();
+  };
+
+  const usarHerramienta = (h) => {
+    const e = est.current;
+    e.herramienta = e.herramienta === h ? null : h;
+    e.centroTmp = null; e.previo = null; e.vertices = []; e.puntero = null;
+    setHerramienta(e.herramienta);
+    setMedida(e.herramienta === "medir" ? "Toca los vértices"
+      : e.herramienta === "pivot" ? "Toca el centro del pívot sobre la foto" : "");
+    pintar();
+  };
+
+  const cambiarFinca = (f) => { est.current.finca = f; setFinca(f); setTimeout(encuadrar, 30); };
+  const cambiarPinta = (p) => { est.current.pinta = p; setPinta(p); setTimeout(pintar, 20); };
+  const zoom = (d) => { const v = est.current.vista; v.z = Math.max(6, Math.min(19, v.z + d)); pintar(); };
+
+  const fincasUnicas = [...new Set(PARCELAS_PAC.map(p => p.f))];
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <style>{`.etqMapa{font:700 11px 'Manrope',sans-serif;fill:#fff;paint-order:stroke;stroke:rgba(0,0,0,.85);stroke-width:3px;text-anchor:middle}`}</style>
+
+      <FormHeader title="Plano de parcelas" onBack={() => setView({ name: "parcelas" })} />
+
+      <div className="flex gap-1.5 mb-2 overflow-x-auto pb-1 scrollbar-hide">
+        {["todas", ...fincasUnicas].map(f => (
+          <button key={f} onClick={() => cambiarFinca(f)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition flex items-center gap-1.5 ${
+              finca === f ? "bg-emerald-950 text-amber-50" : "bg-white/60 text-stone-700 border border-stone-300/40"}`}>
+            {f !== "todas" && <span className="w-2.5 h-2.5 rounded-sm" style={{ background: COLOR_FINCA[f] }} />}
+            {f === "todas" ? "Todas" : f.replace("Finca ", "")}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex gap-1.5 mb-2">
+        <button onClick={() => cambiarPinta("cultivo")}
+          className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-bold transition ${pinta === "cultivo" ? "bg-emerald-950 text-amber-50" : "bg-white/60 text-stone-700 border border-stone-300/40"}`}>
+          Cultivo
+        </button>
+        <button onClick={() => cambiarPinta("riego")}
+          className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-bold transition ${pinta === "riego" ? "bg-emerald-950 text-amber-50" : "bg-white/60 text-stone-700 border border-stone-300/40"}`}>
+          Regadío SIGPAC
+        </button>
+      </div>
+
+      <div className="flex gap-1.5 mb-2">
+        <button onClick={() => usarHerramienta("medir")}
+          className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+            herramienta === "medir" ? "bg-orange-600 text-white" : "bg-white/60 text-stone-700 border border-stone-300/40"}`}>
+          <span>📐</span> Medir superficie
+        </button>
+        <button onClick={() => usarHerramienta("pivot")}
+          className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+            herramienta === "pivot" ? "bg-blue-600 text-white" : "bg-white/60 text-stone-700 border border-stone-300/40"}`}>
+          <span>◎</span> Marcar pívot
+        </button>
+      </div>
+
+      <div ref={cajaRef}
+        className="relative w-full rounded-2xl overflow-hidden border border-stone-300/40 bg-stone-700"
+        style={{ height: "58vh", minHeight: 320, cursor: herramienta ? "crosshair" : "grab", touchAction: "none" }}>
+        <div ref={tilesRef} className="absolute inset-0" />
+        <svg ref={svgRef} className="absolute inset-0 w-full h-full" style={{ pointerEvents: "none" }} />
+
+        {cargando && (
+          <div className="absolute inset-0 bg-[#F5F0E1] flex flex-col items-center justify-center gap-3 px-6 text-center">
+            <p style={{ fontFamily: "'Fraunces', serif" }} className="text-lg font-bold text-emerald-950">Trayendo las parcelas</p>
+            <div className="w-56 h-1.5 bg-stone-300 rounded-full overflow-hidden">
+              <div className="h-full bg-emerald-700 rounded-full transition-all" style={{ width: progreso + "%" }} />
+            </div>
+            <p className="text-xs text-stone-600">{progreso}%</p>
+          </div>
+        )}
+
+        <div className="absolute right-2 bottom-2 flex flex-col gap-1.5">
+          <button onClick={() => zoom(1)} className="w-9 h-9 rounded-lg bg-white/95 border border-stone-300 text-lg font-bold text-emerald-950 shadow-sm">+</button>
+          <button onClick={() => zoom(-1)} className="w-9 h-9 rounded-lg bg-white/95 border border-stone-300 text-lg font-bold text-emerald-950 shadow-sm">−</button>
+        </div>
+
+        {!cargando && (
+          <div className="absolute left-2 bottom-2 bg-white/92 border border-stone-300/50 rounded-lg px-2.5 py-1.5 max-w-[60%]">
+            <p className="text-[11px] font-bold text-emerald-950 leading-tight">{resumen}</p>
+            <p className="text-[9px] text-stone-600 leading-tight">Toca una parcela para abrirla</p>
+          </div>
+        )}
+
+        <div className="absolute right-2 top-2 bg-white/85 rounded px-1.5 py-0.5 text-[8px] text-stone-700">
+          Ortofoto PNOA © IGN · Recintos © FEGA
+        </div>
+      </div>
+
+      {herramienta && (
+        <div className={`rounded-xl p-3 mt-2 text-white ${herramienta === "medir" ? "bg-orange-700" : "bg-blue-700"}`}>
+          <p className="text-sm font-bold mb-2">{medida}</p>
+          <div className="flex gap-2">
+            {herramienta === "medir" && (
+              <button onClick={() => { est.current.vertices.pop(); pintar(); }}
+                className="flex-1 bg-white/20 rounded-lg py-2 text-xs font-bold">Deshacer</button>
+            )}
+            <button onClick={() => usarHerramienta(null)}
+              className="flex-1 bg-white/20 rounded-lg py-2 text-xs font-bold">Cancelar</button>
+            {herramienta === "medir" && (
+              <button onClick={guardarZona}
+                className="flex-1 bg-white text-orange-700 rounded-lg py-2 text-xs font-bold">Terminar</button>
+            )}
+
+          </div>
+        </div>
+      )}
+
+      {true && (
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mt-3 mb-6">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-2">
+            Dibujado sobre el plano · {pivots.length} pívot{pivots.length === 1 ? "" : "s"} · {zonas.length} medicion{zonas.length === 1 ? "" : "es"}
+          </p>
+          {pivots.length === 0 && zonas.length === 0 && (
+            <p className="text-[11px] text-stone-600 leading-snug">
+              Todavía no hay nada dibujado. Usa 📐 para medir una superficie o ◎ para marcar un pívot.
+            </p>
+          )}
+          {pivots.map(pv => (
+            <div key={pv.id} className="py-2 border-t border-stone-200 first:border-0">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-sm bg-blue-500 flex-shrink-0" />
+                <input type="text" value={pv.nombre || ""}
+                  onChange={(e) => saveDoc({ ...pv, nombre: e.target.value })}
+                  className="text-xs font-semibold text-emerald-950 bg-transparent outline-none flex-1 min-w-0" />
+                <span className="text-xs font-mono font-bold text-emerald-950">{(Number(pv.ha) || 0).toFixed(2)} ha</span>
+                <button onClick={async () => { if (confirm("¿Borrar este pívot?")) { await deleteDoc(pv.id); showToast("Pívot borrado"); } }}
+                  className="text-rose-700 text-xs font-bold px-1">✕</button>
+              </div>
+              <div className="flex items-center gap-2 mt-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-stone-600">Radio</span>
+                <input type="range" min="30" max="900" step="5" value={pv.r}
+                  onChange={(e) => {
+                    const r = Number(e.target.value);
+                    saveDoc({ ...pv, r, ha: Math.PI * r * r / 10000 });
+                  }}
+                  className="flex-1 accent-blue-600" />
+                <input type="number" min="10" value={pv.r}
+                  onChange={(e) => {
+                    const r = Number(e.target.value) || 10;
+                    saveDoc({ ...pv, r, ha: Math.PI * r * r / 10000 });
+                  }}
+                  className="w-16 bg-stone-100 rounded-lg px-2 py-1 text-xs font-mono font-bold text-emerald-950 text-right outline-none" />
+                <span className="text-[10px] text-stone-600 font-bold">m</span>
+              </div>
+            </div>
+          ))}
+          {zonas.map(z2 => (
+            <div key={z2.id} className="flex items-center gap-2 py-1.5 border-t border-stone-200">
+              <span className="w-2.5 h-2.5 rounded-sm bg-orange-500 flex-shrink-0" />
+              <span className="text-xs text-emerald-950 flex-1 truncate">{z2.nombre} · {z2.perimetro} m</span>
+              <span className="text-xs font-mono font-bold text-emerald-950">{(Number(z2.ha) || 0).toFixed(2)} ha</span>
+              <button onClick={async () => { if (confirm("¿Borrar esta medición?")) { await deleteDoc(z2.id); showToast("Medición borrada"); } }}
+                className="text-rose-700 text-xs font-bold px-1">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// =============================================================
+// PARCELAS — listado con totales y acceso a cada ficha
+// =============================================================
+function ParcelasView({ docs, setView, saveDoc, settings, showToast, isOnline }) {
+  const [fincaFiltro, setFincaFiltro] = useState("todas");
+  const [q, setQ] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const [progreso, setProgreso] = useState(0);
+
+  const planes = {};
+  docs.filter(d => d.kind === "parcela" && d.type === "plan").forEach(d => { planes[d.id] = d; });
+
+  const fincas = [...new Set(PARCELAS_PAC.map(p => p.f))];
+  const visibles = PARCELAS_PAC
+    .filter(p => fincaFiltro === "todas" || p.f === fincaFiltro)
+    .filter(p => !q || `${p.po}/${p.pa} ${p.f}`.toLowerCase().includes(q.toLowerCase()))
+    .sort((a,b) => a.f.localeCompare(b.f) || a.po - b.po || a.pa - b.pa);
+
+  const haDe = (p) => Number((planes[parcelaId(p)] || {}).ha) || 0;
+  const totalHa = visibles.reduce((s,p) => s + haDe(p), 0);
+  const conDatos = visibles.filter(p => haDe(p) > 0).length;
+
+  // Descarga de SIGPAC lo que falte
+  const actualizarTodo = async () => {
+    if (!isOnline) { showToast("Necesitas conexión", "err"); return; }
+    setCargando(true); setProgreso(0);
+    let hechas = 0, fallos = 0;
+    for (const p of PARCELAS_PAC) {
+      const id = parcelaId(p);
+      try {
+        const info = await traerSigpac(p);
+        const previo = planes[id] || {};
+        await saveDoc({
+          ...previo,
+          id, kind: "parcela", type: "plan",
+          finca: p.f, mu: p.mu, po: p.po, pa: p.pa,
+          ha: info.ha, haRegadio: info.haRegadio, recintos: info.recintos,
+          campana: previo.campana || campanaActual(),
+          cultivo: previo.cultivo || "", riego: previo.riego || {}, notes: previo.notes || "",
+          worker: settings.workerName || "", farm: p.f,
+          createdAt: previo.createdAt || new Date().toISOString(), sentAt: null,
+          status: "borrador"
+        });
+      } catch (e) { fallos++; }
+      hechas++; setProgreso(Math.round(hechas / PARCELAS_PAC.length * 100));
+    }
+    setCargando(false);
+    showToast(fallos ? `Actualizadas ${hechas - fallos}, fallaron ${fallos}` : `${hechas} parcelas actualizadas`);
+  };
+
+  // Trae lo marcado en la página suelta del plano
+  const importarCopia = async (input) => {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const lector = new FileReader();
+    lector.onload = async () => {
+      try {
+        const d = JSON.parse(lector.result);
+        let nPlan = 0, nPiv = 0, nZon = 0;
+
+        // Cultivos, riego y notas de cada parcela
+        for (const [clave, v] of Object.entries(d.plan || {})) {
+          if (!v) continue;
+          const id = "parcela-" + clave;
+          const previo = planes[id] || {};
+          const trozos = clave.split("-");
+          const ref = PARCELAS_PAC.find(p => p.mu == trozos[0] && p.po == trozos[1] && p.pa == trozos[2]);
+          if (!ref) continue;
+          await saveDoc({
+            ...previo,
+            id, kind: "parcela", type: "plan",
+            finca: ref.f, mu: ref.mu, po: ref.po, pa: ref.pa,
+            ha: previo.ha || 0, haRegadio: previo.haRegadio || 0, recintos: previo.recintos || [],
+            campana: previo.campana || campanaActual(),
+            cultivo: v.cultivo || previo.cultivo || "",
+            riego: v.riego || previo.riego || {},
+            notes: v.nota || previo.notes || "",
+            worker: settings.workerName || "", farm: ref.f,
+            createdAt: previo.createdAt || new Date().toISOString(),
+            status: "borrador", sentAt: null
+          });
+          nPlan++;
+        }
+
+        // Pívots
+        for (const pv of (d.pivots || [])) {
+          if (!pv || pv.cx === undefined) continue;
+          await saveDoc({
+            id: "pivot-" + (pv.id || Date.now() + "-" + nPiv),
+            kind: "parcela", type: "pivot",
+            cx: pv.cx, cy: pv.cy, r: pv.r || 400,
+            nombre: pv.nombre || "Pívot", cultivo: pv.cultivo || "", notes: pv.nota || "",
+            ha: Math.PI * (pv.r || 400) * (pv.r || 400) / 10000,
+            worker: settings.workerName || "", farm: "",
+            createdAt: new Date().toISOString(), status: "borrador", sentAt: null
+          });
+          nPiv++;
+        }
+
+        // Superficies medidas
+        for (const z of (d.zonas || [])) {
+          if (!z || !Array.isArray(z.pts) || z.pts.length < 3) continue;
+          await saveDoc({
+            id: "zona-" + (z.id || Date.now() + "-" + nZon),
+            kind: "parcela", type: "zona",
+            pts: z.pts, nombre: z.nombre || "Zona", cultivo: z.cultivo || "", notes: z.nota || "",
+            ha: superficieHa(z.pts), perimetro: Math.round(perimetroMetros(z.pts)),
+            worker: settings.workerName || "", farm: "",
+            createdAt: new Date().toISOString(), status: "borrador", sentAt: null
+          });
+          nZon++;
+        }
+
+        showToast(`Importado: ${nPlan} parcelas, ${nPiv} pívots, ${nZon} mediciones`);
+      } catch (e) {
+        console.error("[Importar] ", e);
+        showToast("Ese fichero no es una copia válida", "err");
+      }
+      input.value = "";
+    };
+    lector.readAsText(f);
+  };
+
+  // Resumen por cultivo
+  const porCultivo = {};
+  visibles.forEach(p => {
+    const d = planes[parcelaId(p)] || {};
+    const c = d.cultivo || "";
+    porCultivo[c] = (porCultivo[c] || 0) + (Number(d.ha) || 0);
+  });
+  const resumen = Object.entries(porCultivo).sort((a,b) => b[1] - a[1]).filter(([,ha]) => ha > 0);
+  const totalRegado = visibles.reduce((s,p) => s + haRegadaPlan(planes[parcelaId(p)]), 0);
+
+  // Lo que está arrendado a terceros
+  const arrendadas = visibles.map(p => planes[parcelaId(p)]).filter(d => d && d.cultivo === "alquiler");
+  const haArrendada = arrendadas.reduce((s,d) => s + (Number(d.ha)||0), 0);
+  const rentaTotal  = arrendadas.reduce((s,d) => s + (Number(d.renta)||0), 0);
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+      <FormHeader title="Parcelas PAC" onBack={() => setView({ name: "home" })} />
+
+      {conDatos === 0 && !cargando && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3">
+          <p className="text-xs font-bold text-amber-900 mb-1">Faltan los datos de SIGPAC</p>
+          <p className="text-[11px] text-amber-800 leading-snug mb-2">
+            Trae las superficies y el regadío oficial de tus {PARCELAS_PAC.length} parcelas. Solo hay que hacerlo una vez.
+          </p>
+          <button onClick={actualizarTodo} disabled={!isOnline}
+            className="w-full bg-emerald-950 text-amber-50 rounded-lg py-2.5 font-bold text-sm active:scale-[0.98] transition disabled:opacity-40">
+            Traer datos de SIGPAC
+          </button>
+        </div>
+      )}
+
+      {cargando && (
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-3">
+          <p className="text-xs font-bold text-emerald-950 mb-2">Consultando SIGPAC… {progreso}%</p>
+          <div className="w-full h-2 bg-stone-200 rounded-full overflow-hidden">
+            <div className="h-full bg-emerald-700 rounded-full transition-all" style={{ width: progreso + "%" }} />
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-2.5 text-center">
+          <p className="text-[9px] uppercase tracking-wider font-bold text-stone-600">Superficie</p>
+          <p className="font-mono font-bold text-emerald-950 text-sm mt-0.5">{totalHa.toFixed(1)} ha</p>
+        </div>
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-2.5 text-center">
+          <p className="text-[9px] uppercase tracking-wider font-bold text-stone-600">Parcelas</p>
+          <p className="font-mono font-bold text-emerald-950 text-sm mt-0.5">{visibles.length}</p>
+        </div>
+        <div className="bg-blue-50 border border-blue-300 rounded-xl p-2.5 text-center">
+          <p className="text-[9px] uppercase tracking-wider font-bold text-blue-800">Regadío</p>
+          <p className="font-mono font-bold text-blue-900 text-sm mt-0.5">{totalRegado.toFixed(1)} ha</p>
+        </div>
+      </div>
+
+      <button onClick={() => setView({ name: "mapa-parcelas" })}
+        className="w-full bg-gradient-to-br from-emerald-800 to-emerald-950 text-amber-50 rounded-xl p-3 mb-3 flex items-center gap-3 active:scale-[0.98] transition shadow-md">
+        <span className="text-2xl">🗺️</span>
+        <div className="text-left flex-1 min-w-0">
+          <p style={{ fontFamily: "'Fraunces', serif" }} className="font-bold text-base leading-tight">Ver el plano</p>
+          <p className="text-[11px] text-amber-50/70 leading-tight">Foto aérea · medir superficies · marcar pívots</p>
+        </div>
+        <ChevronRight size={18} className="text-amber-50/70 flex-shrink-0" />
+      </button>
+
+      <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-3">
+        <p className="text-[11px] text-stone-700 leading-snug mb-2">
+          ¿Marcaste pívots o cultivos en la página suelta del plano? Guarda allí una copia y tráela aquí.
+        </p>
+        <button onClick={() => document.getElementById("traerPlano").click()}
+          className="w-full bg-stone-800 text-amber-50 rounded-lg py-2 font-bold text-xs active:scale-[0.98] transition">
+          Importar copia del plano
+        </button>
+        <input type="file" id="traerPlano" accept=".json" style={{ display: "none" }}
+          onChange={(e) => importarCopia(e.target)} />
+      </div>
+
+      <div className="flex gap-2 mb-3 overflow-x-auto pb-1 scrollbar-hide">
+        {["todas", ...fincas].map(f => (
+          <button key={f} onClick={() => setFincaFiltro(f)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition ${
+              fincaFiltro === f ? "bg-emerald-950 text-amber-50" : "bg-white/60 text-stone-700 border border-stone-300/40"
+            }`}>
+            {f === "todas" ? "Todas" : f.replace("Finca ", "")}
+          </button>
+        ))}
+      </div>
+
+      <div className="bg-white/60 border border-stone-300/40 rounded-xl px-3 py-2.5 mb-3 flex items-center gap-2">
+        <Search size={16} className="text-stone-500" />
+        <input type="text" value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="Buscar polígono o parcela..."
+          className="flex-1 bg-transparent outline-none text-emerald-950 placeholder:text-stone-400 text-sm" />
+        {q && <button onClick={() => setQ("")}><X size={14} className="text-stone-500" /></button>}
+      </div>
+
+      {resumen.length > 0 && (
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-3">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-2">Hectáreas por cultivo</p>
+          {resumen.map(([c, ha]) => (
+            <div key={c} className="flex items-center gap-2 py-1">
+              <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: pacCultivo(c).c }} />
+              <span className="text-xs text-emerald-950 flex-1 truncate">{pacCultivo(c).l}</span>
+              <div className="h-1.5 bg-stone-200 rounded-full flex-1 overflow-hidden max-w-[80px]">
+                <div className="h-full rounded-full" style={{ width: (ha/totalHa*100).toFixed(1)+"%", background: pacCultivo(c).c }} />
+              </div>
+              <span className="text-xs font-mono font-bold text-emerald-950 w-16 text-right">{ha.toFixed(1)} ha</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {arrendadas.length > 0 && (
+        <div className="bg-violet-50 border border-violet-300 rounded-xl p-3 mb-3">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-violet-800 mb-1">Arrendado a terceros</p>
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="font-mono font-bold text-violet-900 text-lg">{haArrendada.toFixed(2)} ha</span>
+            <span className="text-xs text-violet-800">en {arrendadas.length} parcela{arrendadas.length>1?"s":""}</span>
+            {rentaTotal > 0 && (
+              <span className="text-xs text-violet-900 font-bold ml-auto">
+                {money(rentaTotal)}/año{haArrendada>0 ? ` · ${(rentaTotal/haArrendada).toFixed(0)} €/ha` : ""}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2 mb-4">
+        {visibles.map(p => {
+          const d = planes[parcelaId(p)] || {};
+          const cult = pacCultivo(d.cultivo);
+          const reg = haRegadaPlan(d);
+          return (
+            <button key={parcelaId(p)} onClick={() => setView({ name: "parcela", parcela: p })}
+              className="w-full bg-white/70 border border-stone-300/40 rounded-xl p-3 flex items-center gap-3 active:bg-white transition text-left">
+              <div className="w-11 h-11 rounded-lg flex flex-col items-center justify-center flex-shrink-0 text-amber-50"
+                style={{ background: d.cultivo ? cult.c : "#0F2922" }}>
+                <span className="text-[9px] font-bold leading-none opacity-80">POL</span>
+                <span className="text-sm font-bold leading-none">{p.po}</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-emerald-950 text-sm">Parcela {p.pa}</p>
+                <p className="text-[11px] text-stone-600 truncate">{p.f.replace("Finca ", "")}</p>
+                <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                  {d.cultivo && (
+                    <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full text-white"
+                      style={{ background: cult.c }}>{cult.l}</span>
+                  )}
+                  {docs.some(x => x.kind === "plan" && x.linkedParcelaId === parcelaId(p)) && (
+                    <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-lime-100 text-lime-900">
+                      📅 Planificada
+                    </span>
+                  )}
+                  {d.cultivo === "alquiler" && d.arrendatario && (
+                    <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-900 truncate max-w-[120px]">
+                      {d.arrendatario}
+                    </span>
+                  )}
+                  {reg > 0 && (
+                    <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-900">
+                      💧 {reg.toFixed(1)} ha
+                    </span>
+                  )}
+                  {d.notes && <span className="text-[10px] text-stone-500 truncate">📝</span>}
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <p className="font-mono font-bold text-emerald-950 text-sm">{(Number(d.ha)||0).toFixed(2)}</p>
+                <p className="text-[9px] text-stone-500 uppercase">ha</p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {conDatos > 0 && (
+        <button onClick={actualizarTodo} disabled={!isOnline || cargando}
+          className="w-full bg-white/70 border border-stone-300/40 text-emerald-950 rounded-xl py-2.5 font-bold text-sm active:scale-[0.98] transition mb-6 disabled:opacity-40">
+          Volver a consultar SIGPAC
+        </button>
+      )}
+    </motion.div>
+  );
+}
+
+// =============================================================
+// PARCELA — ficha con cultivo y reparto de riego
+// =============================================================
+function ParcelaForm({ parcela, docs, setView, saveDoc, settings, showToast, isOnline }) {
+  const id = parcelaId(parcela);
+  const guardado = docs.find(d => d.id === id) || {};
+  const [doc, setDoc] = useState({
+    id, kind: "parcela", type: "plan",
+    finca: parcela.f, mu: parcela.mu, po: parcela.po, pa: parcela.pa,
+    ha: guardado.ha || 0, haRegadio: guardado.haRegadio || 0, recintos: guardado.recintos || [],
+    campana: guardado.campana || campanaActual(),
+    cultivo: guardado.cultivo || "", riego: guardado.riego || {}, notes: guardado.notes || "",
+    worker: settings.workerName || "", farm: parcela.f,
+    createdAt: guardado.createdAt || new Date().toISOString(), sentAt: null,
+    status: "borrador", syncStatus: guardado.syncStatus
+  });
+  const [consultando, setConsultando] = useState(false);
+
+  const update = (k, v) => setDoc(d => ({ ...d, [k]: v }));
+  const fijarRiego = (tipo, valor) => setDoc(d => {
+    const r = { ...(d.riego || {}) };
+    const n = parseFloat(String(valor).replace(",", "."));
+    if (!isFinite(n) || n <= 0) delete r[tipo]; else r[tipo] = n;
+    return { ...d, riego: r };
+  });
+
+  const regadas = haRegadaPlan(doc);
+  const secano = (Number(doc.ha) || 0) - regadas;
+
+  const consultarSigpac = async () => {
+    if (!isOnline) { showToast("Necesitas conexión", "err"); return; }
+    setConsultando(true);
+    try {
+      const info = await traerSigpac(parcela);
+      setDoc(d => ({ ...d, ha: info.ha, haRegadio: info.haRegadio, recintos: info.recintos }));
+      showToast(`${info.ha.toFixed(2)} ha · ${info.haRegadio.toFixed(2)} ha de regadío`);
+    } catch (e) { showToast("SIGPAC no responde", "err"); }
+    setConsultando(false);
+  };
+
+  // ¿Hay ya un plan de cultivo para esta parcela?
+  const planDeParcela = docs.find(d => d.kind === "plan" && d.linkedParcelaId === id);
+
+  const guardar = async () => {
+    await saveDoc(doc);
+    showToast("Parcela guardada");
+    setView({ name: "parcelas" });
+  };
+
+  // Crea el plan de labores partiendo de lo que ya sabemos de la parcela
+  const planificar = async () => {
+    await saveDoc(doc);
+    const conRiego = haRegadaPlan(doc) > 0 || (doc.haRegadio || 0) > 0;
+    const plantilla = plantillaDeCultivo(doc.cultivo, conRiego);
+    setView({ name: "new-plan", initial: {
+      id: newId(), kind: "plan", type: "plan",
+      finca: parcela.f,
+      plotSigpac: `06:${String(parcela.mu).padStart(3,"0")}:${parcela.po}:${parcela.pa}`,
+      plotName: `Polígono ${parcela.po} · Parcela ${parcela.pa}`,
+      crop: plantilla,
+      variety: "",
+      campaign: doc.campana || campanaActual(),
+      areaHa: doc.ha ? String(doc.ha.toFixed(2)) : "",
+      sowingDate: "", harvestDate: "", events: [],
+      notes: doc.notes || "",
+      linkedParcelaId: id,
+      planStatus: "activo", status: "borrador",
+      worker: settings.workerName || "", farm: parcela.f,
+      createdAt: new Date().toISOString(), sentAt: null
+    }});
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+      <FormHeader title={`Polígono ${parcela.po} · Parcela ${parcela.pa}`} onBack={() => setView({ name: "parcelas" })} />
+
+      <div className="bg-gradient-to-br from-emerald-800 to-emerald-950 rounded-2xl p-4 mb-4 text-amber-50 shadow-md">
+        <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-amber-50/70">{parcela.f}</p>
+        <h3 style={{ fontFamily: "'Fraunces', serif" }} className="font-bold text-2xl leading-tight">
+          {(Number(doc.ha) || 0).toFixed(2)} ha
+        </h3>
+        <p className="text-[11px] text-amber-50/80 font-mono">
+          06:{String(parcela.mu).padStart(3,"0")}:{parcela.po}:{parcela.pa}
+        </p>
+      </div>
+
+      {(!doc.ha || doc.ha === 0) && (
+        <button onClick={consultarSigpac} disabled={!isOnline || consultando}
+          className="w-full bg-emerald-950 text-amber-50 rounded-xl py-2.5 font-bold text-sm mb-3 active:scale-[0.98] transition disabled:opacity-40">
+          {consultando ? "Consultando…" : "Traer superficie de SIGPAC"}
+        </button>
+      )}
+
+      <Field label="Campaña">
+        <input type="text" value={doc.campana} onChange={(e) => update("campana", e.target.value)}
+          placeholder="2026/2027"
+          className="w-full bg-transparent outline-none text-emerald-950 font-bold" />
+      </Field>
+
+      <Field label="Qué se va a sembrar">
+        <select value={doc.cultivo} onChange={(e) => update("cultivo", e.target.value)}
+          className="w-full bg-stone-100 rounded-lg px-3 py-2 outline-none text-emerald-950 font-bold text-base">
+          {PAC_CULTIVOS.map(c => <option key={c.v} value={c.v}>{c.l}</option>)}
+        </select>
+      </Field>
+
+      {doc.cultivo === "alquiler" && (
+        <div className="bg-violet-50 border border-violet-300 rounded-xl p-3 mb-3">
+          <p className="text-xs font-bold text-violet-900 mb-2">Parcela arrendada a un tercero</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-violet-800 mb-1">Arrendatario</p>
+          <input type="text" value={doc.arrendatario || ""}
+            onChange={(e) => update("arrendatario", e.target.value)}
+            placeholder="Nombre o empresa"
+            className="w-full bg-white rounded-lg px-3 py-2 outline-none text-emerald-950 font-medium mb-2 border border-violet-200" />
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-violet-800 mb-1">Renta (€/año)</p>
+              <input type="number" step="0.01" inputMode="decimal" value={doc.renta || ""}
+                onChange={(e) => update("renta", e.target.value)} placeholder="0,00"
+                className="w-full bg-white rounded-lg px-3 py-2 outline-none text-emerald-950 font-bold border border-violet-200" />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-violet-800 mb-1">Vence</p>
+              <input type="date" value={doc.finArriendo || ""}
+                onChange={(e) => update("finArriendo", e.target.value)}
+                className="w-full bg-white rounded-lg px-3 py-2 outline-none text-emerald-950 font-medium border border-violet-200" />
+            </div>
+          </div>
+          {Number(doc.renta) > 0 && Number(doc.ha) > 0 && (
+            <p className="text-[11px] text-violet-800 mt-2 font-semibold">
+              Sale a {(Number(doc.renta) / Number(doc.ha)).toFixed(2)} € por hectárea y año.
+            </p>
+          )}
+        </div>
+      )}
+
+      {doc.cultivo !== "alquiler" && doc.haRegadio > 0.005 && (
+        <div className="bg-blue-50 border border-blue-300 rounded-xl p-3 mb-3">
+          <p className="text-xs font-bold text-blue-900 mb-1">
+            SIGPAC declara {doc.haRegadio.toFixed(2)} ha de regadío
+          </p>
+          <p className="text-[11px] text-blue-800 leading-snug mb-2">Elige con qué sistema se riegan:</p>
+          <div className="flex flex-wrap gap-1.5">
+            {PAC_RIEGOS.map(r => (
+              <button key={r.v} onClick={() => setDoc(d => ({ ...d, riego: { [r.v]: Number(doc.haRegadio.toFixed(2)) } }))}
+                className="text-[10px] font-bold px-2.5 py-1.5 rounded-full border bg-white"
+                style={{ borderColor: r.c, color: r.c }}>{r.l}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {doc.cultivo !== "alquiler" && (<>
+      <p className="text-xs font-bold uppercase tracking-wider text-stone-700 mb-2 px-1">Reparto por sistema de riego</p>
+      <div className="space-y-1.5 mb-2">
+        {PAC_RIEGOS.map(r => (
+          <div key={r.v} className="bg-white/70 border border-stone-300/40 rounded-xl px-3 py-2 flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: r.c }} />
+            <span className="text-sm font-semibold text-emerald-950 flex-1">{r.l}</span>
+            <input type="number" step="0.01" min="0" inputMode="decimal"
+              value={doc.riego && doc.riego[r.v] !== undefined ? doc.riego[r.v] : ""}
+              onChange={(e) => fijarRiego(r.v, e.target.value)} placeholder="0"
+              className="w-20 bg-stone-100 rounded-lg px-2 py-1.5 outline-none text-emerald-950 font-bold text-base text-right focus:ring-2 ring-emerald-700" />
+            <span className="text-[10px] text-stone-600 font-bold">ha</span>
+          </div>
+        ))}
+      </div>
+      <p className={`text-xs font-bold mb-3 px-1 ${secano < -0.005 ? "text-rose-700" : "text-stone-600"}`}>
+        {secano < -0.005
+          ? `Te pasas ${Math.abs(secano).toFixed(2)} ha del total de la parcela`
+          : `Regadío ${regadas.toFixed(2)} ha · Secano ${secano.toFixed(2)} ha`}
+      </p>
+
+      </>)}
+
+      {(doc.recintos || []).length > 0 && (
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-3">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-2">Recintos según SIGPAC</p>
+          {doc.recintos.sort((a,b) => a.rec - b.rec).map(r => (
+            <div key={r.rec} className="flex items-center gap-2 py-1 border-t border-dashed border-stone-300 first:border-0 text-xs">
+              <span className="text-stone-700">Recinto {r.rec}</span>
+              <span className="text-stone-600 flex-1 truncate">{USOS_SIGPAC[r.uso] || r.uso || "—"}</span>
+              {r.coef > 0 && <span className="text-[10px] text-blue-800 font-bold">{(r.coef*100).toFixed(0)}% reg.</span>}
+              <span className="font-mono font-bold text-emerald-950">{r.sup.toFixed(2)} ha</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Field label="Notas">
+        <textarea value={doc.notes} onChange={(e) => update("notes", e.target.value)}
+          placeholder="Variedad, fecha prevista de siembra, incidencias…" rows={2}
+          className="w-full bg-transparent outline-none text-emerald-950 font-medium placeholder:text-stone-400 resize-none" />
+      </Field>
+
+      {/* Enlace con el calendario de cultivos */}
+      {planDeParcela ? (
+        <button onClick={() => setView({ name: "new-plan", initial: planDeParcela })}
+          className="w-full bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-3 flex items-center gap-3 active:scale-[0.98] transition">
+          <span className="text-2xl">📅</span>
+          <div className="text-left flex-1 min-w-0">
+            <p style={{ fontFamily: "'Fraunces', serif" }} className="font-bold text-emerald-950 text-sm leading-tight">
+              Ver en el calendario
+            </p>
+            <p className="text-[11px] text-stone-600 leading-tight truncate">
+              {planDeParcela.crop || "Sin cultivo"}
+              {planDeParcela.sowingDate ? ` · siembra ${formatDate(planDeParcela.sowingDate)}` : ""}
+              {` · ${(planDeParcela.events || []).length} labores`}
+            </p>
+          </div>
+          <ChevronRight size={18} className="text-stone-400 flex-shrink-0" />
+        </button>
+      ) : (
+        <button onClick={planificar}
+          className="w-full bg-gradient-to-br from-lime-700 to-lime-900 text-amber-50 rounded-xl p-3 mb-3 flex items-center gap-3 active:scale-[0.98] transition shadow-md">
+          <span className="text-2xl">📅</span>
+          <div className="text-left flex-1 min-w-0">
+            <p style={{ fontFamily: "'Fraunces', serif" }} className="font-bold text-sm leading-tight">
+              Planificar las labores
+            </p>
+            <p className="text-[11px] text-amber-50/75 leading-tight">
+              {doc.cultivo
+                ? `Crea el calendario de ${pacCultivo(doc.cultivo).l.toLowerCase()} para esta parcela`
+                : "Elige antes el cultivo para que proponga las labores"}
+            </p>
+          </div>
+          <ChevronRight size={18} className="text-amber-50/70 flex-shrink-0" />
+        </button>
+      )}
+
+      <button onClick={guardar}
+        className="w-full bg-emerald-950 text-amber-50 rounded-xl py-3.5 font-bold flex items-center justify-center gap-2 active:scale-[0.98] transition shadow-md mb-6">
+        <Save size={18} /> Guardar parcela
+      </button>
     </motion.div>
   );
 }
