@@ -11581,11 +11581,6 @@ function RegistroForm({ regType, setView, saveDoc, settings, showToast, initial 
             <Camera size={16} /><ImageIcon size={16} /> Añadir foto · Cámara o galería
           </button>
         )}
-        {esPresupuesto && (
-          <p className="text-[10px] text-stone-600 mt-2 leading-snug">
-            Hazle foto a todas las hojas, incluidas las condiciones de la letra pequeña. Caben 5 por presupuesto.
-          </p>
-        )}
         {processingPhoto && <p className="text-xs text-stone-600 text-center mt-2">Procesando foto...</p>}
       </div>
 
@@ -15289,6 +15284,11 @@ function DocForm({ setView, saveDoc, settings, showToast, initial, allDocs, init
         {(doc.photos || []).length < 5 && (
           <p className="text-[11px] text-stone-600 text-center mt-1.5 leading-snug">
             Tu móvil te dejará elegir entre <strong>hacer una foto</strong> o <strong>seleccionar de la galería</strong>
+          </p>
+        )}
+        {esPresupuesto && (
+          <p className="text-[10px] text-stone-600 mt-2 leading-snug">
+            Hazle foto a todas las hojas, incluidas las condiciones de la letra pequeña. Caben 5 por presupuesto.
           </p>
         )}
         {processingPhoto && <p className="text-xs text-stone-600 text-center mt-2">Procesando foto...</p>}
