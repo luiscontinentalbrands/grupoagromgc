@@ -8330,25 +8330,91 @@ const LOGO_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABc
 // =============================================================
 const FINCAS = [
   "Finca Batanejo SA",
-  "Finca Tamujoso",
   "Finca La Giralta SA",
   "Finca La China SA",
   "Finca El Caliche",
   "MGC Brands"
 ];
 
+// La Giralta, Tamujoso y Las Rozas son LA MISMA explotación con tres
+// nombres distintos. En la app se guarda siempre con el nombre de la
+// sociedad — "Finca La Giralta SA" — y los otros dos quedan como parajes.
+// La contabilidad analítica va por este mismo centro (ANALITICA GIRALTA).
+const FINCA_PARAJES = {
+  "Finca La Giralta SA": ["Tamujoso", "Las Rozas"]
+};
+
+// Nombres alternativos que hay que reconducir al nombre bueno. La clave
+// va en minúsculas y sin acentos; ver fincaCanonica() más abajo.
+const FINCA_ALIAS = {
+  "finca tamujoso": "Finca La Giralta SA",
+  "tamujoso": "Finca La Giralta SA",
+  "el tamujoso": "Finca La Giralta SA",
+  "finca el tamujoso": "Finca La Giralta SA",
+  "las rozas": "Finca La Giralta SA",
+  "finca las rozas": "Finca La Giralta SA",
+  "rozas": "Finca La Giralta SA",
+  "la giralta": "Finca La Giralta SA",
+  "giralta": "Finca La Giralta SA",
+  "finca la giralta": "Finca La Giralta SA",
+  "batanejo": "Finca Batanejo SA",
+  "finca batanejo": "Finca Batanejo SA",
+  "la china": "Finca La China SA",
+  "finca la china": "Finca La China SA",
+  "el caliche": "Finca El Caliche"
+};
+
+// Devuelve siempre el nombre oficial de la explotación. Así un documento
+// antiguo guardado como "Tamujoso" y otro guardado como "Finca La Giralta SA"
+// cuentan como la misma finca en filtros, listados y contabilidad.
+const fincaCanonica = (nombre) => {
+  if (!nombre) return nombre;
+  const clave = String(nombre).trim().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return FINCA_ALIAS[clave] || nombre;
+};
+
+// Etiqueta larga para pantallas: "Finca La Giralta SA (Tamujoso · Las Rozas)"
+const fincaEtiqueta = (nombre) => {
+  const oficial = fincaCanonica(nombre);
+  const otros = FINCA_PARAJES[oficial];
+  return otros && otros.length ? `${oficial} (${otros.join(" · ")})` : oficial;
+};
+
+// Normaliza los nombres de finca de un documento venga de donde venga.
+const normalizarFincas = (d) => {
+  if (!d || typeof d !== "object") return d;
+  const out = { ...d };
+  ["finca", "destination", "farm", "origin"].forEach((k) => {
+    if (out[k]) out[k] = fincaCanonica(out[k]);
+  });
+  if (Array.isArray(out.destinations)) {
+    out.destinations = Array.from(new Set(out.destinations.map(fincaCanonica)));
+  }
+  return out;
+};
+
 // Qué ganado hay en cada finca. Sirve para no ofrecer piensos que
 // no corresponden: al porquero no se le proponen piensos de oveja.
 const FINCA_GANADO = {
-  "Finca Batanejo SA":  ["vacuno", "ovino"],
-  "Finca Tamujoso":     ["porcino", "ovino"],
+  "Finca Batanejo SA":   ["vacuno", "ovino"],
   "Finca La Giralta SA": ["porcino", "ovino"],
-  "Finca La China SA":  [],
-  "Finca El Caliche":   [],
-  "MGC Brands":         []
+  "Finca La China SA":   [],
+  "Finca El Caliche":    [],
+  "MGC Brands":          []
 };
 
-const especiesDeFinca = (finca) => FINCA_GANADO[finca] || [];
+const especiesDeFinca = (finca) => FINCA_GANADO[fincaCanonica(finca)] || [];
+
+// Qué especies ve de verdad una persona en una finca: lo que hay allí,
+// cruzado con lo que lleva su puesto. En La Giralta hay ovino y porcino,
+// pero el mayoral solo lleva el ovino y el porquero solo el porcino.
+const especiesVisibles = (finca, perms) => {
+  const enLaFinca = especiesDeFinca(finca);
+  const delPuesto = perms && perms.speciesScope;
+  if (!delPuesto || !delPuesto.length) return enLaFinca;
+  return enLaFinca.filter((e) => delPuesto.includes(e));
+};
 const fincasConEspecie = (especie) =>
   Object.keys(FINCA_GANADO).filter((f) => FINCA_GANADO[f].includes(especie));
 
@@ -8602,7 +8668,7 @@ const formatDaysUntil = (days) => {
 // MOLINO DE BATANEJO — recetas, producciones y envíos
 // =============================================================
 // Surte de pienso a: Batanejo (ovino + vacuno) · La Giralta (ovino + porcino)
-const MILL_DESTINATIONS = ["Finca Batanejo SA", "Finca Tamujoso", "Finca La Giralta SA"];
+const MILL_DESTINATIONS = ["Finca Batanejo SA", "Finca La Giralta SA"];
 
 const MILL_SPECIES = [
   { id: "ovino",   label: "🐑 Ovino / Lanar" },
@@ -8663,28 +8729,46 @@ const ROLES = [
     permissions: { all: true, admin: true }
   },
   {
-    id: "mayoral", label: "Mayoral", short: "Mayoral",
-    icon: "🐑", color: "from-amber-700 to-amber-900",
-    description: "Batanejo: lanar, vacuno y porcino · sanidad · pienso",
+    // Hay dos mayorales, uno por finca, y no llevan el mismo ganado.
+    // El id "mayoral" se mantiene para no invalidar los usuarios ya dados
+    // de alta: es el de Batanejo, que es donde estaba antes el rol.
+    id: "mayoral", label: "Mayoral de Batanejo", short: "Mayoral Batanejo",
+    icon: "🐄", color: "from-amber-700 to-amber-900",
+    description: "Batanejo: ovino y vacuno · sanidad · pienso",
     permissions: {
       newAlbaran: true, newOrden: true, showGanaderia: true, showStock: true,
       stockTypes: ["stock-ganaderia"],
       canRequestFeed: true, seeOwnFeedOnly: true,
-      // En Batanejo el mayoral hace también de vaquero y de porquero.
-      // Lleva además el lanar de Tamujoso.
-      farmScope: ["Finca Batanejo SA", "Finca Tamujoso"],
+      farmScope: ["Finca Batanejo SA"],
+      // En Batanejo no hay porcino.
+      speciesScope: ["ovino", "vacuno"],
       hideAgricultura: true, hideCalendar: true
     }
   },
   {
-    id: "porquero", label: "Porquero", short: "Porquero",
-    icon: "🐷", color: "from-rose-700 to-rose-900",
-    description: "Tamujoso: porcino · sanidad · reproducción · pienso",
+    id: "mayoral-giralta", label: "Mayoral de La Giralta", short: "Mayoral Giralta",
+    icon: "🐑", color: "from-lime-700 to-lime-900",
+    description: "La Giralta (Tamujoso · Las Rozas): ovino · sanidad · pienso",
     permissions: {
       newAlbaran: true, newOrden: true, showGanaderia: true, showStock: true,
       stockTypes: ["stock-ganaderia"],
       canRequestFeed: true, seeOwnFeedOnly: true,
-      farmScope: ["Finca Tamujoso", "Finca La Giralta SA"],
+      farmScope: ["Finca La Giralta SA"],
+      // Del porcino de La Giralta se encarga otra persona.
+      speciesScope: ["ovino"],
+      hideAgricultura: true, hideCalendar: true
+    }
+  },
+  {
+    id: "porquero", label: "Porquero de La Giralta", short: "Porquero",
+    icon: "🐷", color: "from-rose-700 to-rose-900",
+    description: "La Giralta: porcino · sanidad · reproducción · pienso",
+    permissions: {
+      newAlbaran: true, newOrden: true, showGanaderia: true, showStock: true,
+      stockTypes: ["stock-ganaderia"],
+      canRequestFeed: true, seeOwnFeedOnly: true,
+      farmScope: ["Finca La Giralta SA"],
+      speciesScope: ["porcino"],
       hideAgricultura: true, hideCalendar: true
     }
   },
@@ -9652,6 +9736,41 @@ const REGISTRO_TYPES = [
 ];
 const findRegType = (id) => REGISTRO_TYPES.find((t) => t.id === id);
 
+// Al reabrir un documento ya guardado, asegura que las listas que la pantalla
+// va a recorrer existan de verdad. Evita que un documento antiguo, o uno que
+// llega incompleto de la sincronizacion, rompa el formulario al abrirlo.
+const conListas = (d, claves) => {
+  if (!d) return null;
+  const out = { ...d };
+  ["photos"].concat(claves || []).forEach((k) => {
+    if (!Array.isArray(out[k])) out[k] = [];
+  });
+  return out;
+};
+
+// Respaldo para registros antiguos o de un tipo que ya no existe en la app:
+// en vez de romper la pantalla, los pinta con los campos que traiga guardados.
+const regTypeFallback = (doc) => ({
+  id: (doc && doc.type) || "registro",
+  label: "Registro",
+  icon: "\ud83d\udcdd",
+  color: "from-stone-600 to-stone-800",
+  legal: false,
+  legalRef: "",
+  computed: null,
+  computedLabels: {},
+  fields: Object.keys((doc && doc.fields) || {}).map((k) => ({ k, label: k, type: "text" }))
+});
+
+// Respaldo equivalente para los recuentos de stock.
+const stockTypeFallback = (doc) => ({
+  id: ((doc && doc.type) || "").replace("stock-", "") || "stock",
+  label: "Recuento",
+  icon: "\ud83d\udce6",
+  color: "from-stone-600 to-stone-800",
+  template: []
+});
+
 // =============================================================
 // CLOUD SYNC — Firebase Realtime Database
 // Config embebido — todos los móviles que abran este HTML conectan
@@ -10337,7 +10456,8 @@ export default function App() {
       });
       const keys = await storage.list("doc:");
       const loaded = await Promise.all(keys.map(async (k) => await storage.get(k)));
-      setDocs(loaded.filter(Boolean).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+      setDocs(loaded.filter(Boolean).map(normalizarFincas)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
       setLoading(false);
     })();
   }, []);
@@ -10371,7 +10491,7 @@ export default function App() {
         }
       }
 
-      const merged = Array.from(localMap.values())
+      const merged = Array.from(localMap.values()).map(normalizarFincas)
         .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
       setDocs(merged);
     });
@@ -10423,9 +10543,12 @@ export default function App() {
   };
 
   const saveDoc = async (doc) => {
+    // Siempre con el nombre oficial de la explotación, para que Giralta,
+    // Tamujoso y Las Rozas no acaben como tres fincas distintas.
+    const limpio = normalizarFincas(doc);
     const enriched = firebaseDb
-      ? { ...doc, syncStatus: doc.syncStatus === "synced" ? "pending" : (doc.syncStatus || "pending") }
-      : doc;
+      ? { ...limpio, syncStatus: limpio.syncStatus === "synced" ? "pending" : (limpio.syncStatus || "pending") }
+      : limpio;
     await storage.set(`doc:${enriched.id}`, enriched);
     setDocs((d) => {
       const f = d.filter((x) => x.id !== enriched.id);
@@ -10955,9 +11078,9 @@ function ActionCard({ color, icon: Icon, title, subtitle, onClick }) {
 
 function DocCard({ doc, onClick }) {
   const isReg = doc.kind === "registro";
-  const regCfg = isReg ? findRegType(doc.type) : null;
+  const regCfg = isReg ? (findRegType(doc.type) || regTypeFallback(doc)) : null;
   const isStock = doc.kind === "stock";
-  const stockCfg = isStock ? findStockType((doc.type || "").replace("stock-", "")) : null;
+  const stockCfg = isStock ? (findStockType((doc.type || "").replace("stock-", "")) || stockTypeFallback(doc)) : null;
   const isPlan = doc.kind === "plan";
   const isMill = doc.kind === "molino";
   const millCfg = isMill ? findMillType(doc.type) : null;
@@ -11052,7 +11175,7 @@ function DocCard({ doc, onClick }) {
   }
 
   if (isReg && regCfg) {
-    const summary = regCfg.fields.slice(0, 2)
+    const summary = (regCfg.fields || []).slice(0, 2)
       .map((f) => doc.fields?.[f.k]).filter(Boolean).join(" · ");
     return (
       <button onClick={onClick}
@@ -11467,10 +11590,10 @@ function RegField({ field, value, onChange }) {
 }
 
 function RegistroForm({ regType, setView, saveDoc, settings, showToast, initial }) {
-  const cfg = findRegType(regType);
+  const cfg = findRegType(regType) || regTypeFallback(initial || { type: regType });
   const blank = () => {
     const fields = {};
-    cfg.fields.forEach((f) => { fields[f.k] = f.default === "today" ? todayISO() : ""; });
+    (cfg.fields || []).forEach((f) => { fields[f.k] = f.default === "today" ? todayISO() : ""; });
     return {
       id: newId(), type: regType, kind: "registro",
       fields, notes: "", photos: [],
@@ -11479,7 +11602,9 @@ function RegistroForm({ regType, setView, saveDoc, settings, showToast, initial 
       createdAt: new Date().toISOString(), sentAt: null
     };
   };
-  const [doc, setDoc] = useState(initial || blank());
+  const [doc, setDoc] = useState(initial
+    ? { ...initial, fields: initial.fields || {}, photos: initial.photos || [] }
+    : blank());
   const [processingPhoto, setProcessingPhoto] = useState(false);
   const [zoomPhoto, setZoomPhoto] = useState(null);
   const photoInputRef = useRef(null);
@@ -11509,7 +11634,7 @@ function RegistroForm({ regType, setView, saveDoc, settings, showToast, initial 
   const removePhoto = (id) => setDoc((d) => ({ ...d, photos: (d.photos || []).filter((p) => p.id !== id) }));
 
   const handleSave = async () => {
-    const missing = cfg.fields.filter((f) => f.required && !(doc.fields?.[f.k] && String(doc.fields[f.k]).trim()));
+    const missing = (cfg.fields || []).filter((f) => f.required && !(doc.fields?.[f.k] && String(doc.fields[f.k]).trim()));
     if (missing.length > 0) {
       showToast(`Falta: ${missing[0].label}`, "err");
       return;
@@ -11536,7 +11661,7 @@ function RegistroForm({ regType, setView, saveDoc, settings, showToast, initial 
         </div>
       </div>
 
-      {cfg.fields.map((field) => (
+      {(cfg.fields || []).map((field) => (
         <Field key={field.k} label={field.label + (field.required ? " *" : "")}>
           <RegField field={field} value={doc.fields?.[field.k]} onChange={(v) => updateField(field.k, v)} />
         </Field>
@@ -11619,15 +11744,17 @@ function RegistroForm({ regType, setView, saveDoc, settings, showToast, initial 
 // STOCK FORM — monthly stock count per finca
 // =============================================================
 function StockForm({ stockType, setView, saveDoc, settings, showToast, initial }) {
-  const cfg = findStockType(stockType);
+  const cfg = findStockType(stockType) || stockTypeFallback(initial || { type: "stock-" + stockType });
 
-  const buildBlankItems = () => cfg.template.flatMap((cat) =>
-    cat.items.map((item) => ({
+  const buildBlankItems = () => (cfg.template || []).flatMap((cat) =>
+    (cat.items || []).map((item) => ({
       name: item.name, category: cat.category, qty: "", unit: item.defaultUnit
     }))
   );
 
-  const [doc, setDoc] = useState(initial || {
+  const [doc, setDoc] = useState(initial
+    ? { ...initial, items: initial.items || buildBlankItems(), photos: initial.photos || [] }
+    : {
     id: newId(),
     type: `stock-${stockType}`,
     kind: "stock",
@@ -11687,7 +11814,7 @@ function StockForm({ stockType, setView, saveDoc, settings, showToast, initial }
 
   // Build global item index map per category
   let globalIdx = 0;
-  const categoryGroups = cfg.template.map((cat) => {
+  const categoryGroups = (cfg.template || []).map((cat) => {
     const startIdx = globalIdx;
     globalIdx += cat.items.length;
     return { ...cat, startIdx };
@@ -11715,7 +11842,7 @@ function StockForm({ stockType, setView, saveDoc, settings, showToast, initial }
         <select value={doc.finca} onChange={(e) => updateField("finca", e.target.value)}
           className="w-full bg-stone-100 rounded-lg px-3 py-2 outline-none text-emerald-950 font-bold text-base">
           <option value="">— Selecciona finca —</option>
-          {FINCAS.map((f) => <option key={f} value={f}>{f}</option>)}
+          {FINCAS.map((f) => <option key={f} value={f}>{fincaEtiqueta(f)}</option>)}
         </select>
       </Field>
 
@@ -11816,7 +11943,7 @@ function StockForm({ stockType, setView, saveDoc, settings, showToast, initial }
 // PLAN FORM — crop planning with editable timeline
 // =============================================================
 function PlanForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, docs }) {
-  const [doc, setDoc] = useState(initial || {
+  const [doc, setDoc] = useState(conListas(initial, ["events"]) || {
     id: newId(),
     kind: "plan",
     type: "plan",
@@ -11938,7 +12065,7 @@ function PlanForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, d
         <select value={doc.finca} onChange={(e) => update("finca", e.target.value)}
           className="w-full bg-stone-100 rounded-lg px-3 py-2 outline-none text-emerald-950 font-bold text-base">
           <option value="">— Selecciona finca —</option>
-          {FINCAS.map((f) => <option key={f} value={f}>{f}</option>)}
+          {FINCAS.map((f) => <option key={f} value={f}>{fincaEtiqueta(f)}</option>)}
         </select>
       </Field>
 
@@ -12565,7 +12692,7 @@ function FeedRequestForm({ setView, saveDoc, deleteDoc, settings, showToast, ini
   const isApprover = perms.canApproveFeed || perms.all;
   const isProducer = perms.canProduceFromOrders || perms.all;
 
-  const [doc, setDoc] = useState(initial || {
+  const [doc, setDoc] = useState(conListas(initial, []) || {
     id: newId(), kind: "molino", type: "pedido",
     requestDate: todayISO(),
     requestedBy: settings.workerName || role?.label || "",
@@ -12592,10 +12719,11 @@ function FeedRequestForm({ setView, saveDoc, deleteDoc, settings, showToast, ini
   const allowedFincas = perms.farmScope || MILL_DESTINATIONS;
   // Solo se ofrecen los piensos que encajan con la finca elegida:
   // primero por destino declarado en la receta, y si no, por la especie que hay allí.
-  const especiesFinca = especiesDeFinca(doc.destination);
+  const especiesFinca = especiesVisibles(doc.destination, perms);
   const compatibleRecetas = doc.destination
     ? recetas.filter((r) => {
-        const porDestino = Array.isArray(r.destinations) && r.destinations.includes(doc.destination);
+        const porDestino = Array.isArray(r.destinations)
+          && r.destinations.map(fincaCanonica).includes(fincaCanonica(doc.destination));
         const porEspecie = especiesFinca.length === 0
           ? true
           : (r.species === "mixto" || especiesFinca.includes(r.species));
@@ -12808,7 +12936,7 @@ Enviado desde el Cuaderno de Campo.`;
           disabled={!canEditRequest}
           className="w-full bg-stone-100 rounded-lg px-3 py-2 outline-none text-emerald-950 font-bold text-base disabled:opacity-70">
           <option value="">— Selecciona finca —</option>
-          {allowedFincas.map((f) => <option key={f} value={f}>{f}</option>)}
+          {allowedFincas.map((f) => <option key={f} value={f}>{fincaEtiqueta(f)}</option>)}
         </select>
       </Field>
 
@@ -12827,7 +12955,7 @@ Enviado desde el Cuaderno de Campo.`;
         </select>
         {doc.destination && especiesFinca.length > 0 && (
           <p className="text-[10px] text-stone-600 mt-1">
-            En {doc.destination} hay {especiesFinca.map((e) => {
+            En {fincaCanonica(doc.destination)} llevas {especiesFinca.map((e) => {
               const sp = MILL_SPECIES.find((x) => x.id === e);
               return sp ? sp.label : e;
             }).join(" y ")}
@@ -12995,7 +13123,7 @@ Enviado desde el Cuaderno de Campo.`;
 // MOLINO — EntradaForm: materia prima que entra al molino
 // =============================================================
 function EntradaForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, docs }) {
-  const [doc, setDoc] = useState(initial || {
+  const [doc, setDoc] = useState(conListas(initial, []) || {
     id: newId(), kind: "molino", type: "entrada",
     entryDate: todayISO(),
     ingredient: "",
@@ -13105,7 +13233,7 @@ function EntradaForm({ setView, saveDoc, deleteDoc, settings, showToast, initial
           <select value={doc.origin} onChange={(e) => update("origin", e.target.value)}
             className="w-full bg-stone-100 rounded-lg px-3 py-2 outline-none text-emerald-950 font-medium">
             <option value="">— Finca de origen —</option>
-            {FINCAS.map((f) => <option key={f} value={f}>{f}</option>)}
+            {FINCAS.map((f) => <option key={f} value={f}>{fincaEtiqueta(f)}</option>)}
           </select>
         ) : (
           <input type="text" value={doc.origin} onChange={(e) => update("origin", e.target.value)}
@@ -13175,7 +13303,7 @@ function EntradaForm({ setView, saveDoc, deleteDoc, settings, showToast, initial
 
 function RecetaForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, docs, perms }) {
   const readOnly = perms?.seeOwnFeedOnly === true;
-  const [doc, setDoc] = useState(initial || {
+  const [doc, setDoc] = useState(conListas(initial, ["ingredients", "destinations"]) || {
     id: newId(), kind: "molino", type: "receta",
     name: "", species: "", category: "",
     destinations: [],
@@ -13278,7 +13406,7 @@ function RecetaForm({ setView, saveDoc, deleteDoc, settings, showToast, initial,
               <input type="checkbox" checked={doc.destinations.includes(dest)}
                 onChange={() => toggleDest(dest)}
                 className="w-4 h-4 accent-emerald-700" />
-              <span className="text-sm text-emerald-950">{dest}</span>
+              <span className="text-sm text-emerald-950">{fincaEtiqueta(dest)}</span>
             </label>
           ))}
         </div>
@@ -13388,7 +13516,7 @@ function RecetaForm({ setView, saveDoc, deleteDoc, settings, showToast, initial,
 // MOLINO — ProduccionForm
 // =============================================================
 function ProduccionForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, recetas, docs }) {
-  const [doc, setDoc] = useState(initial || {
+  const [doc, setDoc] = useState(conListas(initial, ["ingredients"]) || {
     id: newId(), kind: "molino", type: "produccion",
     productionDate: todayISO(),
     recetaId: "", recetaName: "",
@@ -13696,7 +13824,7 @@ function ProduccionForm({ setView, saveDoc, deleteDoc, settings, showToast, init
 // MOLINO — EnvioForm
 // =============================================================
 function EnvioForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, recetas, docs }) {
-  const [doc, setDoc] = useState(initial || {
+  const [doc, setDoc] = useState(conListas(initial, []) || {
     id: newId(), kind: "molino", type: "envio",
     shipmentDate: todayISO(),
     destination: "",
@@ -13735,7 +13863,8 @@ function EnvioForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, 
 
   // Filtrar recetas según destino seleccionado
   const compatibleRecetas = doc.destination
-    ? recetas.filter((r) => !r.destinations || r.destinations.length === 0 || r.destinations.includes(doc.destination))
+    ? recetas.filter((r) => !r.destinations || r.destinations.length === 0
+        || r.destinations.map(fincaCanonica).includes(fincaCanonica(doc.destination)))
     : recetas;
 
   const [showNotifySheet, setShowNotifySheet] = useState(false);
@@ -13810,7 +13939,7 @@ Cuaderno de Campo.`;
         <select value={doc.destination} onChange={(e) => update("destination", e.target.value)}
           className="w-full bg-stone-100 rounded-lg px-3 py-2 outline-none text-emerald-950 font-bold text-base">
           <option value="">— Selecciona finca —</option>
-          {MILL_DESTINATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+          {MILL_DESTINATIONS.map((d) => <option key={d} value={d}>{fincaEtiqueta(d)}</option>)}
         </select>
       </Field>
 
@@ -14150,12 +14279,20 @@ function MillView({ docs, setView, settings, showToast, role, perms }) {
   // Filter for farmers: only their farm scope
   if (isFarmer) {
     const scope = p.farmScope || [];
-    pedidos = pedidos.filter((d) => scope.includes(d.destination) || d.requestedByRole === role?.id);
-    envios = envios.filter((d) => scope.includes(d.destination));
+    const enAlcance = (destino) => scope.map(fincaCanonica).includes(fincaCanonica(destino));
+    pedidos = pedidos.filter((d) => enAlcance(d.destination) || d.requestedByRole === role?.id);
+    envios = envios.filter((d) => enAlcance(d.destination));
     producciones = []; // farmers don't see productions
-    // Farmers see only recipes that go to their farm(s) — read only
+    // Cada uno ve solo los piensos de su finca y de su ganado: el mayoral
+    // de La Giralta no tiene por qué ver los piensos del porcino.
+    const especies = p.speciesScope || [];
+    const deSuGanado = (r) =>
+      especies.length === 0 || !r.species || r.species === "mixto" || especies.includes(r.species);
     recetasVisible = recetas.filter((r) =>
-      !r.destinations || r.destinations.length === 0 || r.destinations.some((d) => scope.includes(d))
+      deSuGanado(r) && (
+        !r.destinations || r.destinations.length === 0
+          || r.destinations.some((d) => scope.map(fincaCanonica).includes(fincaCanonica(d)))
+      )
     );
   } else {
     recetasVisible = recetas;
@@ -14718,7 +14855,15 @@ function MillCard({ doc, setView }) {
 // DOC FORM
 // =============================================================
 function DocForm({ setView, saveDoc, settings, showToast, initial, allDocs, initialFlow, isOrder, isQuote }) {
-  const [doc, setDoc] = useState(initial || {
+  const lineaEnBlanco = () => ({ id: newId(), desc: "", qty: "", unit: isOrder ? "uds" : "kg", urgency: "media", category: null, unitPrice: "", vatRate: 21, discount: "" });
+  const [doc, setDoc] = useState(initial
+    ? {
+        ...initial,
+        items: (initial.items && initial.items.length ? initial.items : [lineaEnBlanco()])
+          .map((it) => (it && it.id ? it : { ...lineaEnBlanco(), ...(it || {}) })),
+        photos: initial.photos || []
+      }
+    : {
     id: newId(),
     type: isQuote ? "presupuesto" : isOrder ? "orden" : "comercial",
     quoteStatus: "solicitado", concept: "", quoteType: "maquinaria",
@@ -16032,9 +16177,9 @@ function CommercialCard({ doc, setView }) {
 // =============================================================
 function DetailView({ doc, setView, settings, saveDoc, deleteDoc, showToast }) {
   const isReg = doc.kind === "registro";
-  const regCfg = isReg ? findRegType(doc.type) : null;
+  const regCfg = isReg ? (findRegType(doc.type) || regTypeFallback(doc)) : null;
   const isStock = doc.kind === "stock";
-  const stockCfg = isStock ? findStockType((doc.type || "").replace("stock-", "")) : null;
+  const stockCfg = isStock ? (findStockType((doc.type || "").replace("stock-", "")) || stockTypeFallback(doc)) : null;
   const isPedido = doc.type === "orden";
   const isPresupuesto = doc.type === "presupuesto";
   const esComercial = !doc.kind && ["albaran", "factura", "comercial"].includes(doc.type);
@@ -16193,7 +16338,7 @@ function DetailView({ doc, setView, settings, saveDoc, deleteDoc, showToast }) {
     if (doc.worker) txt += `Operario: ${doc.worker}\n`;
 
     const byCat = {};
-    doc.items.forEach((it) => {
+    (doc.items || []).forEach((it) => {
       const c = it.category || "sin-categoria";
       if (!byCat[c]) byCat[c] = [];
       byCat[c].push(it);
@@ -16312,7 +16457,7 @@ function DetailView({ doc, setView, settings, saveDoc, deleteDoc, showToast }) {
   };
 
   const itemsByCat = {};
-  doc.items.forEach((it) => {
+  (doc.items || []).forEach((it) => {
     const c = it.category || "sin-categoria";
     if (!itemsByCat[c]) itemsByCat[c] = [];
     itemsByCat[c].push(it);
@@ -17583,7 +17728,7 @@ function UsersView({ setView, currentUser, showToast, isOnline }) {
   );
 }
 
-const PARCELAS_PAC = [{"f":"Finca Batanejo SA","mu":44,"po":18,"pa":115},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":38},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":39},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":57},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":58},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":1},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":2},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":3},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":4},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":5},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":7},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":8},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":9},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":10},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":11},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":12},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":13},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":14},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":15},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":16},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":17},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":18},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":19},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":40},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":41},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":42},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":43},{"f":"Finca La China SA","mu":60,"po":22,"pa":18},{"f":"Finca La China SA","mu":60,"po":22,"pa":19},{"f":"Finca La China SA","mu":60,"po":22,"pa":20},{"f":"Finca La China SA","mu":60,"po":22,"pa":21},{"f":"Finca La China SA","mu":60,"po":22,"pa":23},{"f":"Finca La China SA","mu":60,"po":22,"pa":24},{"f":"Finca La China SA","mu":60,"po":22,"pa":56},{"f":"Finca La China SA","mu":60,"po":22,"pa":70},{"f":"Finca La China SA","mu":60,"po":22,"pa":71},{"f":"Finca La China SA","mu":60,"po":23,"pa":1},{"f":"Finca La China SA","mu":60,"po":23,"pa":2},{"f":"Finca La China SA","mu":60,"po":23,"pa":3},{"f":"Finca La China SA","mu":60,"po":23,"pa":4},{"f":"Finca La China SA","mu":60,"po":23,"pa":5},{"f":"Finca La China SA","mu":60,"po":23,"pa":9},{"f":"Finca La China SA","mu":138,"po":6,"pa":139},{"f":"Finca Tamujoso","mu":146,"po":7,"pa":312},{"f":"Finca Tamujoso","mu":146,"po":15,"pa":1},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":7},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":8},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":10},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":11},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":12},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":13},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":14},{"f":"Finca Tamujoso","mu":146,"po":16,"pa":15}];
+const PARCELAS_PAC = [{"f":"Finca Batanejo SA","mu":44,"po":18,"pa":115},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":38},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":39},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":57},{"f":"Finca Batanejo SA","mu":44,"po":19,"pa":58},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":1},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":2},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":3},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":4},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":5},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":7},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":8},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":9},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":10},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":11},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":12},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":13},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":14},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":15},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":16},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":17},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":18},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":19},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":40},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":41},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":42},{"f":"Finca Batanejo SA","mu":44,"po":20,"pa":43},{"f":"Finca La China SA","mu":60,"po":22,"pa":18},{"f":"Finca La China SA","mu":60,"po":22,"pa":19},{"f":"Finca La China SA","mu":60,"po":22,"pa":20},{"f":"Finca La China SA","mu":60,"po":22,"pa":21},{"f":"Finca La China SA","mu":60,"po":22,"pa":23},{"f":"Finca La China SA","mu":60,"po":22,"pa":24},{"f":"Finca La China SA","mu":60,"po":22,"pa":56},{"f":"Finca La China SA","mu":60,"po":22,"pa":70},{"f":"Finca La China SA","mu":60,"po":22,"pa":71},{"f":"Finca La China SA","mu":60,"po":23,"pa":1},{"f":"Finca La China SA","mu":60,"po":23,"pa":2},{"f":"Finca La China SA","mu":60,"po":23,"pa":3},{"f":"Finca La China SA","mu":60,"po":23,"pa":4},{"f":"Finca La China SA","mu":60,"po":23,"pa":5},{"f":"Finca La China SA","mu":60,"po":23,"pa":9},{"f":"Finca La China SA","mu":138,"po":6,"pa":139},{"f":"Finca La Giralta SA","mu":146,"po":7,"pa":312},{"f":"Finca La Giralta SA","mu":146,"po":15,"pa":1},{"f":"Finca La Giralta SA","mu":146,"po":16,"pa":7},{"f":"Finca La Giralta SA","mu":146,"po":16,"pa":8},{"f":"Finca La Giralta SA","mu":146,"po":16,"pa":10},{"f":"Finca La Giralta SA","mu":146,"po":16,"pa":11},{"f":"Finca La Giralta SA","mu":146,"po":16,"pa":12},{"f":"Finca La Giralta SA","mu":146,"po":16,"pa":13},{"f":"Finca La Giralta SA","mu":146,"po":16,"pa":14},{"f":"Finca La Giralta SA","mu":146,"po":16,"pa":15}];
 
 // =============================================================
 // PARCELAS PAC — plan de siembra y riego por parcela
@@ -17759,7 +17904,7 @@ function trazoSector(cx, cy, rp, desde, arco) {
 
 const COLOR_FINCA = {
   "Finca Batanejo SA": "#FFD34D",
-  "Finca Tamujoso": "#FF7A6B",
+  "Finca La Giralta SA": "#FF7A6B",
   "Finca La China SA": "#7BE38A"
 };
 
@@ -18119,7 +18264,7 @@ function MapaParcelas({ docs, setView, saveDoc, deleteDoc, settings, showToast, 
       worker: v.settings.workerName || "", farm: est.current.finca === "todas" ? "" : est.current.finca,
       createdAt: new Date().toISOString(), status: "borrador", sentAt: null
     };
-    console.log("[Plano] Guardando medición", doc.id, doc.pts.length, "vértices");
+    console.log("[Plano] Guardando medición", doc.id, (doc.pts || []).length, "vértices");
     try {
       await v.saveDoc(doc);
       v.showToast(`${doc.ha.toFixed(2)} ha guardadas`);
@@ -18897,7 +19042,7 @@ function ParcelaForm({ parcela, docs, setView, saveDoc, settings, showToast, isO
       {(doc.recintos || []).length > 0 && (
         <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-3">
           <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-2">Recintos según SIGPAC</p>
-          {doc.recintos.sort((a,b) => a.rec - b.rec).map(r => (
+          {[...(doc.recintos || [])].sort((a,b) => a.rec - b.rec).map(r => (
             <div key={r.rec} className="flex items-center gap-2 py-1 border-t border-dashed border-stone-300 first:border-0 text-xs">
               <span className="text-stone-700">Recinto {r.rec}</span>
               <span className="text-stone-600 flex-1 truncate">{USOS_SIGPAC[r.uso] || r.uso || "—"}</span>
