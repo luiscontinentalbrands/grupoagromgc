@@ -50,6 +50,140 @@
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 
+  <!-- CONTROL DE VERSION -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <script>
+  // Versión de esta compilación. La escribe build_html.py en cada montaje.
+  window.__APP_VERSION__ = "2026.09.21-1443";
+
+  // ---- Aviso de error -------------------------------------------------
+  // Va aquí, en el arranque de la página, y no dentro del código de la app:
+  // así aparece también cuando lo que falla es la propia carga de la app
+  // (sin cobertura, librerías que no bajan...) y no se queda la rueda girando.
+  window.__pintarError__ = function (titulo, detalles, traza) {
+    if (window.__errorPintado__) return;
+    window.__errorPintado__ = true;
+    var root = document.getElementById('loading') || document.getElementById('root') || document.body;
+    if (!root) return;
+    var v = window.__APP_VERSION__ || 'desconocida';
+    var pub = window.__VERSION_PUBLICADA__;
+    var desfase = (pub && pub !== v)
+      ? '<p style="background:#fef3c7;border:1px solid #fbbf24;padding:8px;border-radius:6px;">'
+        + '<strong>Tu movil tiene una version antigua.</strong><br/>Esta pantalla: ' + v
+        + ' &middot; Publicada: ' + pub + '<br/>Pulsa <strong>Actualizar y reiniciar</strong>.</p>'
+      : '';
+    var texto = titulo + '\nVersion: ' + v + '\n' + detalles + '\n' + (traza || '');
+    root.innerHTML =
+      '<div style="padding:16px;font-family:system-ui,sans-serif;background:#fef2f2;color:#7f1d1d;min-height:100vh;overflow:auto;box-sizing:border-box;">'
+      + '<h2 style="margin:0 0 4px;font-size:20px;">' + titulo + '</h2>'
+      + '<p style="font-size:12px;color:#9a3412;margin:0 0 12px;">Version de la app: <strong>' + v + '</strong></p>'
+      + desfase
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;">'
+      +   '<button id="__btnReinicio" style="flex:1;min-width:150px;background:#0F2922;color:#FAEFD2;border:0;border-radius:10px;padding:14px;font-size:15px;font-weight:700;">Actualizar y reiniciar</button>'
+      +   '<button id="__btnCopiar" style="flex:1;min-width:150px;background:#fff;color:#7f1d1d;border:1px solid #fca5a5;border-radius:10px;padding:14px;font-size:15px;font-weight:700;">Copiar el error</button>'
+      + '</div>'
+      + '<p style="font-size:12px;">Si el fallo sigue despues de reiniciar, pulsa <strong>Copiar el error</strong> y manda el texto por WhatsApp a la oficina.</p>'
+      + '<pre style="background:#fff;padding:10px;border:1px solid #fca5a5;border-radius:6px;overflow:auto;font-size:11px;white-space:pre-wrap;">'
+      + (detalles + '\n' + (traza || '')) + '</pre></div>';
+    var bR = document.getElementById('__btnReinicio');
+    if (bR) bR.onclick = function () { bR.textContent = 'Reiniciando...'; window.__reinicioTotal__(); };
+    var bC = document.getElementById('__btnCopiar');
+    if (bC) bC.onclick = function () {
+      function hecho() { bC.textContent = 'Copiado'; }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(texto).then(hecho, manual);
+      } else { manual(); }
+      function manual() {
+        var ta = document.createElement('textarea');
+        ta.value = texto; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); hecho(); }
+        catch (e) { bC.textContent = 'Copia el texto de abajo'; }
+        ta.remove();
+      }
+    };
+  };
+
+  window.addEventListener('error', function (e) {
+    window.__pintarError__('Error al cargar la app',
+      'Mensaje: ' + (e.message || 'desconocido') + '\nArchivo: ' + (e.filename || '-') + '\nLinea: ' + (e.lineno || '-'),
+      (e.error && e.error.stack) ? e.error.stack : String(e.error || ''));
+  });
+
+  window.addEventListener('unhandledrejection', function (e) {
+    window.__pintarError__('Error al cargar la app',
+      'Razon: ' + ((e.reason && e.reason.message) ? e.reason.message : String(e.reason)),
+      (e.reason && e.reason.stack) ? e.reason.stack : '');
+  });
+
+  // Si a los 25 segundos la app no ha arrancado, deja de girar la rueda y
+  // explica qué hacer, en vez de dejar la pantalla colgada para siempre.
+  setTimeout(function () {
+    if (window.__APP_ARRANCADA__ || window.__errorPintado__) return;
+    window.__pintarError__('La app no ha llegado a cargar',
+      'Lleva 25 segundos intentandolo.\nSuele ser falta de cobertura o una copia antigua guardada en el movil.',
+      '');
+  }, 25000);
+
+  // ---- Control de versión ---------------------------------------------
+  // Los móviles se quedan con la copia vieja de la página guardada en el
+  // navegador y siguen viendo fallos ya corregidos. Esto pregunta al
+  // servidor qué versión hay publicada y, si no coincide, recarga la página
+  // saltándose la copia guardada. Solo lo intenta dos veces, para no entrar
+  // en un bucle si el servidor va con retraso.
+  (function () {
+    var INTENTOS = "cdc-intentos-actualizar";
+    function intentos() { try { return Number(sessionStorage.getItem(INTENTOS) || 0); } catch (e) { return 99; } }
+    function apunta(n) { try { sessionStorage.setItem(INTENTOS, String(n)); } catch (e) {} }
+
+    window.__forzarActualizacion__ = function (version) {
+      var base = location.href.split("?")[0].split("#")[0];
+      location.replace(base + "?v=" + encodeURIComponent(version || Date.now()));
+    };
+
+    // Borra todo lo guardado en este móvil y vuelve a bajar la página entera.
+    window.__reinicioTotal__ = function () {
+      try { localStorage.clear(); } catch (e) {}
+      try { sessionStorage.clear(); } catch (e) {}
+      var tareas = [];
+      try {
+        if (window.caches && caches.keys) {
+          tareas.push(caches.keys().then(function (ks) {
+            return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+          }));
+        }
+      } catch (e) {}
+      try {
+        if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+          tareas.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+            return Promise.all(rs.map(function (r) { return r.unregister(); }));
+          }));
+        }
+      } catch (e) {}
+      Promise.all(tareas).catch(function () {}).then(function () {
+        window.__forzarActualizacion__(Date.now());
+      });
+    };
+
+    if (intentos() >= 2) return;
+    fetch("version.json?t=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.version) return;
+        window.__VERSION_PUBLICADA__ = d.version;
+        if (d.version !== window.__APP_VERSION__) {
+          apunta(intentos() + 1);
+          window.__forzarActualizacion__(d.version);
+        } else {
+          apunta(0);
+        }
+      })
+      .catch(function () { /* sin internet: se sigue con lo que hay */ });
+  })();
+  </script>
+  <!-- FIN CONTROL DE VERSION -->
+
   <script type="importmap">
   {
     "imports": {
@@ -10362,6 +10496,12 @@ function LoginGate({ onLogin, isOnline }) {
             </p>
           </form>
         )}
+
+        {/* Versión visible también aquí: si alguien no puede entrar, puede
+            decirnos qué versión tiene sin tener que llegar a Ajustes. */}
+        <p className="text-[10px] text-stone-500 text-center mt-4">
+          v{(typeof window !== "undefined" && window.__APP_VERSION__) || "?"}
+        </p>
       </div>
     </div>
   );
@@ -17262,6 +17402,67 @@ function HistoryView({ docs, setView }) {
 // =============================================================
 // IMPORT DATA BLOCK — separate component with visible result feedback
 // =============================================================
+// Muestra qué versión tiene este móvil y avisa si el servidor ya tiene otra.
+// Sirve para saber de un vistazo si alguien se ha quedado con la copia vieja.
+function VersionBlock({ showToast }) {
+  const mia = (typeof window !== "undefined" && window.__APP_VERSION__) || "desconocida";
+  const [publicada, setPublicada] = useState(
+    (typeof window !== "undefined" && window.__VERSION_PUBLICADA__) || null);
+  const [mirando, setMirando] = useState(false);
+
+  const comprobar = async () => {
+    setMirando(true);
+    try {
+      const r = await fetch("version.json?t=" + Date.now(), { cache: "no-store" });
+      const d = await r.json();
+      setPublicada(d.version);
+      if (typeof window !== "undefined") window.__VERSION_PUBLICADA__ = d.version;
+      if (d.version === mia) showToast("Ya tienes la última versión");
+      else showToast("Hay una versión nueva: " + d.version);
+    } catch (e) {
+      showToast("No se pudo comprobar (¿sin internet?)", "err");
+    } finally { setMirando(false); }
+  };
+
+  const desfasada = publicada && publicada !== mia;
+
+  return (
+    <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-3">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] uppercase tracking-wider font-bold text-stone-700">Versión en este móvil</span>
+        <span className="font-mono text-xs font-bold text-emerald-950">{mia}</span>
+      </div>
+      {publicada && (
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] uppercase tracking-wider font-bold text-stone-700">Versión publicada</span>
+          <span className={`font-mono text-xs font-bold ${desfasada ? "text-rose-700" : "text-emerald-700"}`}>{publicada}</span>
+        </div>
+      )}
+      {desfasada && (
+        <p className="text-[11px] text-rose-800 bg-rose-50 border border-rose-200 rounded-lg p-2 mb-2">
+          Este móvil se ha quedado con una versión antigua. Pulsa
+          <strong> Actualizar ahora</strong> para bajar la última.
+        </p>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={comprobar} disabled={mirando}
+          className="text-xs font-bold py-2 rounded-lg bg-white border border-stone-300/60 text-emerald-950 active:scale-[0.98] transition disabled:opacity-60">
+          {mirando ? "Comprobando..." : "Comprobar versión"}
+        </button>
+        <button onClick={() => { if (typeof window !== "undefined" && window.__reinicioTotal__) window.__reinicioTotal__(); }}
+          className={`text-xs font-bold py-2 rounded-lg active:scale-[0.98] transition ${
+            desfasada ? "bg-emerald-950 text-amber-50" : "bg-white border border-stone-300/60 text-emerald-950"}`}>
+          Actualizar ahora
+        </button>
+      </div>
+      <p className="text-[10px] text-stone-600 mt-2 leading-relaxed">
+        <strong>Actualizar ahora</strong> borra lo guardado en este móvil y vuelve a bajar
+        la app entera. Los documentos ya sincronizados no se pierden: vuelven de la nube.
+      </p>
+    </div>
+  );
+}
+
 function StorageBlock({ showToast }) {
   const [used, setUsed] = useState(0);
   const [confirm, setConfirm] = useState(false);
@@ -19290,6 +19491,11 @@ function SettingsView({ settings, saveSettings, setView, syncAllNow, docs, showT
       </div>
 
       <p className="text-xs font-bold uppercase tracking-wider text-stone-700 px-1 mb-2 mt-4 flex items-center gap-1.5">
+        <Smartphone size={11} /> Versión de la app
+      </p>
+      <VersionBlock showToast={showToast} />
+
+      <p className="text-xs font-bold uppercase tracking-wider text-stone-700 px-1 mb-2 mt-4 flex items-center gap-1.5">
         <Archive size={11} /> Espacio en el móvil
       </p>
       <StorageBlock showToast={showToast} />
@@ -19388,27 +19594,15 @@ function SettingsView({ settings, saveSettings, setView, syncAllNow, docs, showT
 
 
 // Global error handler that shows errors on screen
-window.addEventListener('error', function(e) {
-  const root = document.getElementById('loading') || document.getElementById('root');
-  if (root) {
-    root.innerHTML = '<div style="padding:20px;font-family:monospace;background:#fef2f2;color:#7f1d1d;min-height:100vh;overflow:auto;"><h2>Error al cargar la app</h2><p><strong>Mensaje:</strong> ' + (e.message || 'Unknown') + '</p><p><strong>Archivo:</strong> ' + (e.filename || 'N/A') + '</p><p><strong>Línea:</strong> ' + (e.lineno || 'N/A') + '</p><pre style="background:#fff;padding:10px;border:1px solid #fca5a5;overflow:auto;">' + (e.error && e.error.stack ? e.error.stack : (e.error || '')) + '</pre></div>';
-  }
-});
-
-window.addEventListener('unhandledrejection', function(e) {
-  const root = document.getElementById('loading') || document.getElementById('root');
-  if (root) {
-    root.innerHTML = '<div style="padding:20px;font-family:monospace;background:#fef2f2;color:#7f1d1d;min-height:100vh;overflow:auto;"><h2>Error async al cargar</h2><p><strong>Razón:</strong> ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)) + '</p><pre style="background:#fff;padding:10px;border:1px solid #fca5a5;overflow:auto;">' + (e.reason && e.reason.stack ? e.reason.stack : '') + '</pre></div>';
-  }
-});
-
+// El aviso de error y el control de versión viven en el <head>, para que
+// funcionen aunque la app no llegue a cargar. Aquí solo queda el arranque.
 try {
   ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-  setTimeout(function() { document.getElementById("loading")?.remove(); }, 100);
+  window.__APP_ARRANCADA__ = true;
+  setTimeout(function () { document.getElementById("loading")?.remove(); }, 100);
 } catch (err) {
-  document.getElementById('loading').innerHTML = '<div style="padding:20px;font-family:monospace;background:#fef2f2;color:#7f1d1d;"><h2>Error al arrancar React</h2><pre>' + (err.stack || err.message) + '</pre></div>';
+  window.__pintarError__('Error al arrancar la app', 'Mensaje: ' + (err.message || err), err.stack || '');
 }
-
-  </script>
+</script>
 </body>
 </html>
