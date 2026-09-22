@@ -56,7 +56,7 @@
   <meta http-equiv="Expires" content="0" />
   <script>
   // Versión de esta compilación. La escribe build_html.py en cada montaje.
-  window.__APP_VERSION__ = "2026.09.21-1443";
+  window.__APP_VERSION__ = "2026.09.22-2152";
 
   // ---- Aviso de error -------------------------------------------------
   // Va aquí, en el arranque de la página, y no dentro del código de la app:
@@ -10507,8 +10507,1729 @@ function LoginGate({ onLogin, isOnline }) {
   );
 }
 
+// =============================================================
+// INFORMES — motor de cálculo
+// Todo sale de los documentos que ya hay en la app. No se guarda
+// nada nuevo: un informe es siempre una foto del momento.
+// =============================================================
+
+// --- Periodos ------------------------------------------------
+const PERIODOS = [
+  { v: "mes",       l: "Este mes" },
+  { v: "mes-ant",   l: "Mes pasado" },
+  { v: "trimestre", l: "Trimestre en curso" },
+  { v: "trim-ant",  l: "Trimestre pasado" },
+  { v: "campana",   l: "Campaña agrícola" },
+  { v: "ano",       l: "Año natural" },
+  { v: "ano-ant",   l: "Año pasado" },
+  { v: "todo",      l: "Todo el histórico" }
+];
+
+// OJO: toISOString() convierte a hora de Greenwich y en España adelanta o
+// atrasa el día. Los periodos se construyen con la fecha local tal cual.
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// Un día suelto, leído siempre como fecha local y nunca como instante UTC.
+const aFecha = (s) => new Date(String(s).slice(0, 10) + "T00:00:00");
+const diasEntre = (a, b) => Math.round((aFecha(a) - aFecha(b)) / 86400000);
+
+// Devuelve { desde, hasta, label } en formato AAAA-MM-DD.
+function rangoDe(periodo) {
+  const h = new Date();
+  const a = h.getFullYear(), m = h.getMonth();
+  const tri = Math.floor(m / 3);
+  const cierra = (d1, d2, l) => ({ desde: iso(d1), hasta: iso(d2), label: l });
+  const finMes = (an, me) => new Date(an, me + 1, 0);
+  switch (periodo) {
+    case "mes":
+      return cierra(new Date(a, m, 1), finMes(a, m),
+        h.toLocaleDateString("es-ES", { month: "long", year: "numeric" }));
+    case "mes-ant":
+      return cierra(new Date(a, m - 1, 1), finMes(a, m - 1),
+        new Date(a, m - 1, 1).toLocaleDateString("es-ES", { month: "long", year: "numeric" }));
+    case "trimestre":
+      return cierra(new Date(a, tri * 3, 1), finMes(a, tri * 3 + 2), `${tri + 1}T ${a}`);
+    case "trim-ant": {
+      const ta = tri === 0 ? a - 1 : a, tt = tri === 0 ? 3 : tri - 1;
+      return cierra(new Date(ta, tt * 3, 1), finMes(ta, tt * 3 + 2), `${tt + 1}T ${ta}`);
+    }
+    case "campana": {
+      // La campaña agrícola va de julio a junio.
+      const ini = m >= 6 ? a : a - 1;
+      return cierra(new Date(ini, 6, 1), new Date(ini + 1, 5, 30), `Campaña ${ini}/${ini + 1}`);
+    }
+    case "ano":     return cierra(new Date(a, 0, 1), new Date(a, 11, 31), String(a));
+    case "ano-ant": return cierra(new Date(a - 1, 0, 1), new Date(a - 1, 11, 31), String(a - 1));
+    default:        return { desde: "0000-01-01", hasta: "9999-12-31", label: "Todo el histórico" };
+  }
+}
+
+// La fecha que cuenta depende del tipo de documento: una factura va por
+// su fecha, un parto por la fecha del parto, una producción por la suya.
+function fechaDeDoc(d) {
+  if (!d) return "";
+  const f = d.fields || {};
+  const candidatos = [
+    d.date, d.productionDate, d.shipmentDate, d.entryDate, d.requestDate, d.countDate,
+    f.treatedAt, f.deathDate, f.moveDate, f.censusDate, f.farrowDate, f.breedingDate,
+    f.sowingDate, f.harvestDate, f.workDate, f.readingDate, f.applicationDate, f.visitDate,
+    d.sowingDate, d.createdAt
+  ];
+  for (const c of candidatos) {
+    if (typeof c === "string" && /^\d{4}-\d{2}-\d{2}/.test(c)) return c.slice(0, 10);
+  }
+  return "";
+}
+
+const enRango = (d, r) => {
+  const f = fechaDeDoc(d);
+  return !!f && f >= r.desde && f <= r.hasta;
+};
+
+const num = (v) => { const n = Number(v); return isFinite(n) ? n : 0; };
+const fincaDe = (d) => fincaCanonica(d.finca || d.destination || d.farm || "") || "Sin asignar";
+
+// Agrupa y suma: clave -> { clave, n, ...acumulados }
+function agrupar(lista, clave, sumas) {
+  const mapa = {};
+  lista.forEach((it) => {
+    const k = clave(it) || "Sin asignar";
+    if (!mapa[k]) { mapa[k] = { clave: k, n: 0 }; Object.keys(sumas).forEach((s) => { mapa[k][s] = 0; }); }
+    mapa[k].n += 1;
+    Object.keys(sumas).forEach((s) => { mapa[k][s] += num(sumas[s](it)); });
+  });
+  return Object.values(mapa);
+}
+const porMayor = (campo) => (a, b) => (b[campo] || 0) - (a[campo] || 0);
+
+// --- Documentos comerciales ----------------------------------
+// Para no contar dos veces: lo facturado manda, y aparte se listan
+// los albaranes que todavía no tienen factura.
+function comercialesDe(docs, flow, r) {
+  const com = docs.filter((d) => !d.kind && ["comercial", "albaran", "factura"].includes(d.type));
+  const delFlujo = com.filter((d) => docFlow(d) === flow);
+  const facturas = delFlujo.filter((d) => docKind(d) === "factura" && enRango(d, r));
+  const yaFacturados = new Set(delFlujo
+    .filter((d) => docKind(d) === "factura")
+    .map((d) => d.linkedAlbaranId).filter(Boolean));
+  const albaranesSinFactura = delFlujo.filter((d) =>
+    docKind(d) === "albaran" && !yaFacturados.has(d.id) && enRango(d, r));
+  return { facturas, albaranesSinFactura, todos: facturas.concat(albaranesSinFactura) };
+}
+
+// Un albarán normalmente se enlaza con su factura al convertirlo, y así no
+// se cuenta dos veces. Pero si alguien mete la factura a mano, el enlace no
+// existe y el gasto aparecería duplicado. Esto no descarta nada por su
+// cuenta: solo señala los que conviene mirar.
+function posiblesDuplicados(docs, flow, albaranes) {
+  const com = docs.filter((d) => !d.kind && ["comercial", "albaran", "factura"].includes(d.type));
+  const facturas = com.filter((d) => docFlow(d) === flow && docKind(d) === "factura");
+  const out = [];
+  (albaranes || []).forEach((alb) => {
+    const tA = computeInvoiceTotals(alb).total;
+    if (tA <= 0) return;
+    const par = facturas.find((f) => {
+      if (normaliza(f.counterparty || "") !== normaliza(alb.counterparty || "")) return false;
+      const tF = computeInvoiceTotals(f).total;
+      if (Math.abs(tF - tA) > 0.02) return false;
+      const dias = Math.abs(diasEntre(f.date || todayISO(), alb.date || todayISO()));
+      return dias <= 60;
+    });
+    if (par) out.push({ albaran: alb, factura: par, importe: tA });
+  });
+  return out;
+}
+
+function totalesDe(lista) {
+  let base = 0, iva = 0, total = 0;
+  lista.forEach((d) => { const t = computeInvoiceTotals(d); base += t.base; iva += t.vatTotal; total += t.total; });
+  return { base, iva, total };
+}
+
+// Desglose por línea, para poder agrupar por producto o por categoría.
+function lineasDe(lista) {
+  const out = [];
+  lista.forEach((d) => {
+    (d.items || []).forEach((it) => {
+      const qty = num(it.qty), pu = num(it.unitPrice), dto = num(it.discount);
+      const importe = qty * pu * (1 - dto / 100);
+      out.push({
+        doc: d, desc: (it.desc || "").trim() || "Sin descripción",
+        categoria: it.category || "otros", qty, unit: it.unit || "uds",
+        unitPrice: pu, importe, fecha: fechaDeDoc(d), tercero: d.counterparty || "Sin nombre"
+      });
+    });
+  });
+  return out;
+}
+
+// --- INFORME DE COMPRAS --------------------------------------
+function informeCompras(docs, r) {
+  const { facturas, albaranesSinFactura, todos } = comercialesDe(docs, "compra", r);
+  const tot = totalesDe(todos);
+  const lineas = lineasDe(todos);
+  const proveedores = agrupar(todos, (d) => d.counterparty || "Sin nombre",
+    { importe: (d) => computeInvoiceTotals(d).total }).sort(porMayor("importe"));
+  const categorias = agrupar(lineas, (l) => l.categoria, { importe: (l) => l.importe }).sort(porMayor("importe"));
+  const productos = agrupar(lineas, (l) => l.desc, { importe: (l) => l.importe, qty: (l) => l.qty })
+    .sort(porMayor("importe"));
+  const sinPagar = facturas.filter((d) => invoiceState(d) !== "pagada");
+  const vencidas = facturas.filter((d) => invoiceState(d) === "vencida");
+  const pedidosAbiertos = docs.filter((d) => !d.kind && d.type === "orden" && !d.orderClosed);
+  const sospechosos = posiblesDuplicados(docs, "compra", albaranesSinFactura);
+  return {
+    tot, facturas, albaranesSinFactura, sospechosos, proveedores, categorias, productos,
+    sinPagar, importeSinPagar: totalesDe(sinPagar).total,
+    vencidas, importeVencido: totalesDe(vencidas).total,
+    pedidosAbiertos
+  };
+}
+
+// --- INFORME DE VENTAS ---------------------------------------
+function informeVentas(docs, r) {
+  const { facturas, albaranesSinFactura, todos } = comercialesDe(docs, "venta", r);
+  const tot = totalesDe(todos);
+  const lineas = lineasDe(todos);
+  const clientes = agrupar(todos, (d) => d.counterparty || "Sin nombre",
+    { importe: (d) => computeInvoiceTotals(d).total }).sort(porMayor("importe"));
+  const productos = agrupar(lineas, (l) => l.desc,
+    { importe: (l) => l.importe, qty: (l) => l.qty }).sort(porMayor("importe"));
+  const sociedades = agrupar(todos.filter((d) => d.seller), (d) => d.seller,
+    { importe: (d) => computeInvoiceTotals(d).total }).sort(porMayor("importe"));
+  const sinCobrar = facturas.filter((d) => invoiceState(d) !== "pagada");
+  const vencidas = facturas.filter((d) => invoiceState(d) === "vencida");
+  return {
+    tot, facturas, albaranesSinFactura, clientes, productos, sociedades,
+    sinCobrar, importeSinCobrar: totalesDe(sinCobrar).total,
+    vencidas, importeVencido: totalesDe(vencidas).total
+  };
+}
+
+// --- INFORME DE GANADO ---------------------------------------
+function informeGanado(docs, r) {
+  const regs = docs.filter((d) => d.kind === "registro");
+  const del = (tipo) => regs.filter((d) => d.type === tipo && enRango(d, r));
+
+  // Censo: vale el recuento más reciente de cada finca.
+  const censos = regs.filter((d) => d.type === "censo");
+  const ultimoPorFinca = {};
+  censos.forEach((c) => {
+    const f = fincaDe(c), fe = fechaDeDoc(c);
+    if (!ultimoPorFinca[f] || fe > ultimoPorFinca[f].fecha) ultimoPorFinca[f] = { doc: c, fecha: fe };
+  });
+  const CAT_CENSO = [
+    ["reproductoras", "Reproductoras"], ["primiparas", "Primíparas"], ["sementales", "Sementales"],
+    ["lactantes", "Lactantes"], ["destete", "Destete / recría"], ["cebo", "Cebo"], ["otros", "Otros"]
+  ];
+  const censoPorFinca = Object.values(ultimoPorFinca).map(({ doc, fecha }) => {
+    const f = doc.fields || {};
+    const detalle = CAT_CENSO.map(([k, l]) => ({ k, l, n: num(f[k]) })).filter((x) => x.n > 0);
+    return {
+      finca: fincaDe(doc), fecha, especie: f.species || "—", doc,
+      detalle, total: detalle.reduce((s, x) => s + x.n, 0)
+    };
+  }).sort((a, b) => b.total - a.total);
+  const censoTotal = censoPorFinca.reduce((s, c) => s + c.total, 0);
+
+  // Partos
+  const partos = del("parto");
+  const vivos = partos.reduce((s, d) => s + num((d.fields || {}).alive), 0);
+  const muertos = partos.reduce((s, d) => s + num((d.fields || {}).stillborn), 0);
+  const momias = partos.reduce((s, d) => s + num((d.fields || {}).mummified), 0);
+  const muertos24 = partos.reduce((s, d) => s + num((d.fields || {}).weakBornDead), 0);
+  const nacidos = vivos + muertos + momias;
+  const mediaCamada = partos.length ? vivos / partos.length : 0;
+
+  // Bajas
+  const bajas = del("baja");
+  const bajasPorCausa = agrupar(bajas, (d) => ((d.fields || {}).cause || "Sin especificar").slice(0, 40), {})
+    .sort(porMayor("n"));
+  const bajasPorCategoria = agrupar(bajas, (d) => (d.fields || {}).category || "Sin categoría", {})
+    .sort(porMayor("n"));
+  const mortalidad = censoTotal > 0 ? (bajas.length / censoTotal) * 100 : 0;
+
+  // Movimientos de animales
+  const movs = del("movimiento");
+  const entradas = movs.filter((d) => /entrada/i.test((d.fields || {}).direction || ""));
+  const salidas  = movs.filter((d) => /salida/i.test((d.fields || {}).direction || ""));
+  const sumCount = (l) => l.reduce((s, d) => s + num((d.fields || {}).count), 0);
+  const sumPeso  = (l) => l.reduce((s, d) => s + num((d.fields || {}).totalWeight), 0);
+
+  // Cubriciones
+  const cubriciones = del("cubricion");
+
+  // Pienso recibido de nuestro propio molino
+  const envios = docs.filter((d) => d.kind === "molino" && d.type === "envio" && enRango(d, r));
+  const piensoPorFinca = agrupar(envios, (d) => fincaCanonica(d.destination) || "Sin asignar",
+    { kg: (d) => d.kg }).sort(porMayor("kg"));
+  const piensoKg = piensoPorFinca.reduce((s, x) => s + x.kg, 0);
+  const kgPorCabeza = censoTotal > 0 ? piensoKg / censoTotal : 0;
+
+  return {
+    censoPorFinca, censoTotal,
+    partos, nacidos, vivos, muertos, momias, muertos24, mediaCamada,
+    bajas, bajasPorCausa, bajasPorCategoria, mortalidad,
+    entradas: { n: entradas.length, animales: sumCount(entradas), kg: sumPeso(entradas) },
+    salidas:  { n: salidas.length,  animales: sumCount(salidas),  kg: sumPeso(salidas) },
+    cubriciones,
+    piensoPorFinca, piensoKg, kgPorCabeza
+  };
+}
+
+// --- INFORME DE SANIDAD Y PLAZOS DE ESPERA -------------------
+// El dato que de verdad importa: qué animales NO se pueden vender
+// todavía porque siguen dentro del plazo de espera del medicamento.
+function informeSanidad(docs, r) {
+  const regs = docs.filter((d) => d.kind === "registro");
+  const tratamientos = regs.filter((d) => d.type === "tratamiento" && enRango(d, r));
+  const hoy = todayISO();
+
+  const conPlazo = regs.filter((d) => d.type === "tratamiento").map((d) => {
+    const f = d.fields || {};
+    const ini = f.treatedAt;
+    if (!ini || !/^\d{4}-\d{2}-\d{2}/.test(ini)) return null;
+    const dias = num(f.durationDays) + num(f.withdrawalDays);
+    const fin = aFecha(ini); fin.setDate(fin.getDate() + dias);
+    const finISO = iso(fin);
+    const restan = diasEntre(finISO, hoy);
+    return {
+      doc: d, animal: f.animal || "Sin identificar", medicamento: f.drug || "—",
+      especie: f.species || "—", inicio: ini, fin: finISO, restan, vigente: finISO >= hoy
+    };
+  }).filter(Boolean);
+
+  const enEspera = conPlazo.filter((x) => x.vigente).sort((a, b) => a.fin.localeCompare(b.fin));
+  const medicamentos = agrupar(tratamientos, (d) => (d.fields || {}).drug || "Sin especificar", {})
+    .sort(porMayor("n"));
+  const porEspecie = agrupar(tratamientos, (d) => (d.fields || {}).species || "Sin especificar", {})
+    .sort(porMayor("n"));
+  const sinReceta = tratamientos.filter((d) => !((d.fields || {}).prescriptionId || "").trim());
+  const visitas = regs.filter((d) => d.type === "visita" && enRango(d, r));
+  const gastoSanidad = lineasDe(comercialesDe(docs, "compra", r).todos)
+    .filter((l) => l.categoria === "sanidad").reduce((s, l) => s + l.importe, 0);
+
+  return { tratamientos, enEspera, medicamentos, porEspecie, sinReceta, visitas, gastoSanidad };
+}
+
+// --- INFORME DE PLANTACIÓN / CULTIVOS ------------------------
+function informePlantacion(docs, r) {
+  // Lo planificado en el plano de parcelas (superficie por cultivo y riego)
+  const parcelas = docs.filter((d) => d.kind === "parcela" && d.type === "plan");
+  const cultivos = agrupar(parcelas.filter((p) => p.cultivo), (p) => p.cultivo, { ha: (p) => p.ha })
+    .map((c) => ({ ...c, label: pacCultivo(c.clave).l, color: pacCultivo(c.clave).c }))
+    .sort(porMayor("ha"));
+  const haTotal = parcelas.reduce((s, p) => s + num(p.ha), 0);
+  const haAsignada = cultivos.reduce((s, c) => s + c.ha, 0);
+
+  const riegos = {};
+  parcelas.forEach((p) => {
+    Object.entries(p.riego || {}).forEach(([k, v]) => { riegos[k] = (riegos[k] || 0) + num(v); });
+  });
+  const porRiego = PAC_RIEGOS.map((x) => ({ ...x, ha: riegos[x.v] || 0 }))
+    .filter((x) => x.ha > 0).sort(porMayor("ha"));
+  const haRegadio = porRiego.reduce((s, x) => s + x.ha, 0);
+
+  const porFinca = agrupar(parcelas, (p) => fincaCanonica(p.finca) || "Sin asignar", { ha: (p) => p.ha })
+    .sort(porMayor("ha"));
+
+  // Lo que de verdad se ha hecho en el campo
+  const regs = docs.filter((d) => d.kind === "registro");
+  const del = (t) => regs.filter((d) => d.type === t && enRango(d, r));
+  const siembras = del("siembra");
+  const cosechas = del("cosecha");
+  const haSembrada = siembras.reduce((s, d) => s + num((d.fields || {}).areaHa), 0);
+  const haCosechada = cosechas.reduce((s, d) => s + num((d.fields || {}).areaHa), 0);
+  const kgCosechados = cosechas.reduce((s, d) => s + num((d.fields || {}).totalProductionKg), 0);
+
+  const rendimientos = agrupar(cosechas, (d) => ((d.fields || {}).crop || "Sin especificar"),
+    { kg: (d) => (d.fields || {}).totalProductionKg, ha: (d) => (d.fields || {}).areaHa })
+    .map((c) => ({ ...c, kgHa: c.ha > 0 ? c.kg / c.ha : 0 })).sort(porMayor("kg"));
+
+  const fitos = del("fitosanitario");
+  const abonados = del("fertilizacion");
+  const riegosReg = del("riego");
+  const labores = del("labor");
+
+  // Coste de campo del periodo, por las compras de estas categorías
+  const lineasCampo = lineasDe(comercialesDe(docs, "compra", r).todos)
+    .filter((l) => ["agricultura", "combustible", "maquinaria"].includes(l.categoria));
+  const costeCampo = lineasCampo.reduce((s, l) => s + l.importe, 0);
+  const costePorHa = haTotal > 0 ? costeCampo / haTotal : 0;
+
+  // Planes de cultivo con labores pendientes
+  const planes = docs.filter((d) => d.kind === "plan");
+  const tareasPendientes = planes.reduce((s, p) =>
+    s + (p.events || []).filter((e) => e.status !== "hecho").length, 0);
+  const tareasAtrasadas = planes.reduce((s, p) =>
+    s + (p.events || []).filter((e) => e.status !== "hecho" && e.date && e.date < todayISO()).length, 0);
+
+  return {
+    parcelas, cultivos, haTotal, haAsignada, haSinAsignar: Math.max(0, haTotal - haAsignada),
+    porRiego, haRegadio, haSecano: Math.max(0, haTotal - haRegadio), porFinca,
+    siembras, cosechas, haSembrada, haCosechada, kgCosechados, rendimientos,
+    fitos, abonados, riegosReg, labores,
+    costeCampo, costePorHa, planes, tareasPendientes, tareasAtrasadas
+  };
+}
+
+// --- INFORME DEL MOLINO --------------------------------------
+function informeMolino(docs, r) {
+  const mill = docs.filter((d) => d.kind === "molino");
+  const producciones = mill.filter((d) => d.type === "produccion" && enRango(d, r));
+  const envios = mill.filter((d) => d.type === "envio" && enRango(d, r));
+  const entradas = mill.filter((d) => d.type === "entrada" && enRango(d, r));
+  const pedidos = mill.filter((d) => d.type === "pedido" && enRango(d, r));
+
+  const kgProducidos = producciones.reduce((s, d) => s + num(d.actualKg), 0);
+  const kgEnviados = envios.reduce((s, d) => s + num(d.kg), 0);
+  const horas = producciones.reduce((s, d) => s + num(d.hoursWorked), 0);
+  const costeTotal = producciones.reduce((s, d) => s + computeProductionCost(d).total, 0);
+  const costeMedio = kgProducidos > 0 ? costeTotal / kgProducidos : 0;
+  const kgPorHora = horas > 0 ? kgProducidos / horas : 0;
+
+  const recetas = mill.filter((d) => d.type === "receta");
+  const porReceta = agrupar(producciones, (d) => {
+    const rec = recetas.find((x) => x.id === d.recetaId);
+    return rec ? rec.name : "Receta borrada";
+  }, { kg: (d) => d.actualKg, coste: (d) => computeProductionCost(d).total })
+    .map((x) => ({ ...x, costeKg: x.kg > 0 ? x.coste / x.kg : 0 })).sort(porMayor("kg"));
+
+  const porDestino = agrupar(envios, (d) => fincaCanonica(d.destination) || "Sin asignar",
+    { kg: (d) => d.kg }).sort(porMayor("kg"));
+
+  // Materias primas consumidas por las producciones del periodo
+  const consumo = {};
+  producciones.forEach((p) => {
+    (p.ingredients || []).forEach((i) => {
+      const k = i.name || "Sin nombre";
+      if (!consumo[k]) consumo[k] = { clave: k, kg: 0, coste: 0 };
+      consumo[k].kg += num(i.kgActual);
+      consumo[k].coste += num(i.kgActual) * num(i.pricePerKg);
+    });
+  });
+  const materias = Object.values(consumo)
+    .map((m) => ({ ...m, precioKg: m.kg > 0 ? m.coste / m.kg : 0 })).sort(porMayor("kg"));
+
+  const kgEntrados = entradas.reduce((s, d) => s + num(d.kg), 0);
+  const stockPienso = computeMillStock(docs);
+  const stockMaterias = computeRawStock(docs);
+  const pendientes = mill.filter((d) => d.type === "pedido" && d.orderStatus === "pendiente");
+
+  return {
+    producciones, envios, entradas, pedidos,
+    kgProducidos, kgEnviados, kgEntrados, horas, costeTotal, costeMedio, kgPorHora,
+    porReceta, porDestino, materias, stockPienso, stockMaterias, pendientes
+  };
+}
+
+// --- INFORME DE IVA / LIBRO DE FACTURAS ----------------------
+// Refleja el libro registro que pide Hacienda: recibidas y expedidas.
+function informeIVA(docs, r) {
+  const com = docs.filter((d) => !d.kind && ["comercial", "albaran", "factura"].includes(d.type));
+  const fact = com.filter((d) => docKind(d) === "factura" && enRango(d, r));
+  const recibidas = fact.filter((d) => docFlow(d) === "compra")
+    .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  const expedidas = fact.filter((d) => docFlow(d) === "venta")
+    .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+
+  const porTipo = (lista) => {
+    const m = {};
+    lista.forEach((d) => {
+      const t = computeInvoiceTotals(d);
+      Object.entries(t.vatByRate).forEach(([tipo, cuota]) => {
+        if (!m[tipo]) m[tipo] = { tipo: Number(tipo), base: 0, cuota: 0 };
+        m[tipo].cuota += cuota;
+        m[tipo].base += Number(tipo) > 0 ? cuota / (Number(tipo) / 100) : 0;
+      });
+    });
+    return Object.values(m).sort((a, b) => a.tipo - b.tipo);
+  };
+
+  const sop = totalesDe(recibidas), rep = totalesDe(expedidas);
+  const sinNumero = fact.filter((d) => !(d.invoiceNumber || "").trim());
+  const sinNif = fact.filter((d) => !(d.counterpartyNif || "").trim());
+
+  return {
+    recibidas, expedidas,
+    soportado: sop.iva, repercutido: rep.iva, aLiquidar: rep.iva - sop.iva,
+    baseCompras: sop.base, baseVentas: rep.base,
+    tiposCompras: porTipo(recibidas), tiposVentas: porTipo(expedidas),
+    sinNumero, sinNif
+  };
+}
+
+// --- INFORME DE EXISTENCIAS ----------------------------------
+function informeExistencias(docs, r) {
+  const recuentos = docs.filter((d) => d.kind === "stock");
+  // El recuento que vale es el último de cada finca y tipo.
+  const ultimos = {};
+  recuentos.forEach((d) => {
+    const k = fincaDe(d) + "|" + d.type;
+    const f = fechaDeDoc(d);
+    if (!ultimos[k] || f > ultimos[k].fecha) ultimos[k] = { doc: d, fecha: f };
+  });
+  const fichas = Object.values(ultimos).map(({ doc, fecha }) => {
+    const items = (doc.items || []).filter((i) => i.qty !== "" && i.qty !== null && i.qty !== undefined);
+    const cfg = findStockType((doc.type || "").replace("stock-", ""));
+    return {
+      doc, fecha, finca: fincaDe(doc), tipo: cfg ? cfg.label : doc.type,
+      icono: cfg ? cfg.icon : "📦", lineas: items.length,
+      mes: doc.month,
+      categorias: agrupar(items, (i) => i.category || "Sin categoría", { qty: (i) => i.qty })
+    };
+  }).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+
+  const stockPienso = computeMillStock(docs);
+  const valorPienso = stockPienso.reduce((s, x) => s + Math.max(0, x.stock) * x.costPerKg, 0);
+  const kgPienso = stockPienso.reduce((s, x) => s + Math.max(0, x.stock), 0);
+  const stockMaterias = computeRawStock(docs);
+  const valorMaterias = stockMaterias.reduce((s, x) => s + Math.max(0, x.stock) * x.costKg, 0);
+  const kgMaterias = stockMaterias.reduce((s, x) => s + Math.max(0, x.stock), 0);
+
+  // Recuentos que llevan más de 45 días sin actualizarse
+  const limite = new Date(); limite.setDate(limite.getDate() - 45);
+  const desactualizados = fichas.filter((f) => f.fecha && f.fecha < iso(limite));
+
+  return {
+    fichas, stockPienso, valorPienso, kgPienso,
+    stockMaterias, valorMaterias, kgMaterias,
+    valorTotal: valorPienso + valorMaterias, desactualizados
+  };
+}
+
+// --- INFORME DE RESULTADO POR CENTRO -------------------------
+// Aproximación de gestión, no contabilidad oficial: reparte por la
+// finca que consta en cada documento.
+function informeResultado(docs, r) {
+  const compras = comercialesDe(docs, "compra", r).todos;
+  const ventas = comercialesDe(docs, "venta", r).todos;
+  const gasto = totalesDe(compras).base;
+  const ingreso = totalesDe(ventas).base;
+
+  const gastoPorCentro = agrupar(compras, (d) => fincaDe(d),
+    { importe: (d) => computeInvoiceTotals(d).base }).sort(porMayor("importe"));
+  const ingresoPorCentro = agrupar(ventas, (d) => fincaDe(d),
+    { importe: (d) => computeInvoiceTotals(d).base }).sort(porMayor("importe"));
+
+  const centros = {};
+  gastoPorCentro.forEach((x) => { centros[x.clave] = { clave: x.clave, gasto: x.importe, ingreso: 0 }; });
+  ingresoPorCentro.forEach((x) => {
+    if (!centros[x.clave]) centros[x.clave] = { clave: x.clave, gasto: 0, ingreso: 0 };
+    centros[x.clave].ingreso = x.importe;
+  });
+  const porCentro = Object.values(centros)
+    .map((c) => ({ ...c, margen: c.ingreso - c.gasto,
+      pct: c.ingreso > 0 ? ((c.ingreso - c.gasto) / c.ingreso) * 100 : null }))
+    .sort((a, b) => b.ingreso - a.ingreso);
+
+  const lineas = lineasDe(compras);
+  const gastoPorCategoria = agrupar(lineas, (l) => l.categoria, { importe: (l) => l.importe })
+    .sort(porMayor("importe"));
+
+  return {
+    ingreso, gasto, margen: ingreso - gasto,
+    pct: ingreso > 0 ? ((ingreso - gasto) / ingreso) * 100 : null,
+    porCentro, gastoPorCategoria,
+    nCompras: compras.length, nVentas: ventas.length
+  };
+}
+
+// --- Catálogo de informes ------------------------------------
+const INFORMES = [
+  { id: "ganado",      label: "Ganado",                icono: "🐑", color: "from-amber-700 to-amber-900",
+    desc: "Censo, partos, bajas, movimientos y pienso", perm: "showGanaderia", ocultarSi: "hideGanaderia" },
+  { id: "sanidad",     label: "Sanidad y plazos",      icono: "💉", color: "from-rose-700 to-rose-900",
+    desc: "Tratamientos y animales en plazo de espera", perm: "showGanaderia", ocultarSi: "hideGanaderia" },
+  { id: "compras",     label: "Compras",               icono: "🛒", color: "from-emerald-700 to-emerald-900",
+    desc: "Por proveedor y categoría · pendiente de pago", perm: "newAlbaran" },
+  { id: "ventas",      label: "Ventas",                icono: "💰", color: "from-teal-700 to-teal-900",
+    desc: "Por cliente y producto · pendiente de cobro", perm: "admin" },
+  { id: "plantacion",  label: "Plantación y cultivos", icono: "🌾", color: "from-lime-700 to-lime-900",
+    desc: "Hectáreas, siembras, cosechas y rendimiento", perm: "showAgricultura", ocultarSi: "hideAgricultura" },
+  { id: "molino",      label: "Molino",                icono: "🏭", color: "from-orange-700 to-orange-900",
+    desc: "Producción, coste por kg y materias primas", perm: null, ocultarSi: "hideMolino" },
+  { id: "existencias", label: "Existencias",           icono: "📦", color: "from-stone-600 to-stone-800",
+    desc: "Último recuento por finca y valor del stock", perm: "showStock" },
+  { id: "resultado",   label: "Resultado por finca",   icono: "📊", color: "from-emerald-800 to-emerald-950",
+    desc: "Ingresos, gastos y margen por centro", perm: "admin" },
+  { id: "iva",         label: "IVA y libro de facturas", icono: "🧾", color: "from-indigo-700 to-indigo-900",
+    desc: "Facturas recibidas y expedidas · IVA a liquidar", perm: "admin" }
+];
+
+// Un informe se ve si el puesto tiene el permiso que pide y no lo tiene
+// ocultado expresamente. Al tractorista, que no entra al molino, tampoco se
+// le ofrece el informe del molino.
+const informesVisibles = (perms) => INFORMES.filter((i) => {
+  if (i.ocultarSi && perms[i.ocultarSi] && !perms.all) return false;
+  return !i.perm || perms.all || perms.admin || perms[i.perm];
+});
+
+// Convierte cualquier informe en texto plano, para mandarlo por
+// WhatsApp o pegarlo en un correo.
+function informeATexto(id, dat, rango) {
+  const L = [];
+  const inf = INFORMES.find((x) => x.id === id);
+  L.push(COMPANY.fullName);
+  L.push(`INFORME DE ${(inf ? inf.label : id).toUpperCase()}`);
+  L.push(`Periodo: ${rango.label} (${formatDate(rango.desde)} — ${formatDate(rango.hasta)})`);
+  L.push("");
+  const linea = (k, v) => L.push(`${k}: ${v}`);
+  const bloque = (t) => { L.push(""); L.push(`--- ${t.toUpperCase()} ---`); };
+  const kg = (n) => `${Math.round(n).toLocaleString("es-ES")} kg`;
+
+  if (id === "compras") {
+    linea("Total comprado", money(dat.tot.total));
+    linea("Base imponible", money(dat.tot.base));
+    linea("IVA soportado", money(dat.tot.iva));
+    linea("Facturas", dat.facturas.length);
+    linea("Albaranes sin factura", dat.albaranesSinFactura.length);
+    linea("Pendiente de pago", money(dat.importeSinPagar));
+    linea("Vencido", money(dat.importeVencido));
+    if ((dat.sospechosos || []).length) {
+      linea("⚠ Posibles gastos duplicados", dat.sospechosos.length);
+      dat.sospechosos.forEach((x) =>
+        L.push(`  ${x.albaran.counterparty}: albarán ${formatDate(x.albaran.date)} y factura ${formatDate(x.factura.date)} por ${money(x.importe)}`));
+    }
+    bloque("Por proveedor");
+    dat.proveedores.slice(0, 15).forEach((p) => L.push(`  ${p.clave}: ${money(p.importe)} (${p.n})`));
+    bloque("Por categoría");
+    dat.categorias.slice(0, 15).forEach((c) => {
+      const cat = findCategory(c.clave);
+      L.push(`  ${cat ? cat.label : c.clave}: ${money(c.importe)}`);
+    });
+  } else if (id === "ventas") {
+    linea("Total vendido", money(dat.tot.total));
+    linea("Base imponible", money(dat.tot.base));
+    linea("IVA repercutido", money(dat.tot.iva));
+    linea("Pendiente de cobro", money(dat.importeSinCobrar));
+    linea("Vencido", money(dat.importeVencido));
+    bloque("Por cliente");
+    dat.clientes.slice(0, 15).forEach((c) => L.push(`  ${c.clave}: ${money(c.importe)} (${c.n})`));
+    bloque("Por producto");
+    dat.productos.slice(0, 15).forEach((p) => L.push(`  ${p.clave}: ${money(p.importe)}`));
+  } else if (id === "ganado") {
+    linea("Censo total", dat.censoTotal);
+    dat.censoPorFinca.forEach((c) => L.push(`  ${c.finca}: ${c.total} (${formatDate(c.fecha)})`));
+    bloque("Partos");
+    linea("Partos", dat.partos.length);
+    linea("Nacidos vivos", dat.vivos);
+    linea("Nacidos muertos", dat.muertos);
+    linea("Media por camada", dec(dat.mediaCamada, 2));
+    bloque("Bajas");
+    linea("Bajas", dat.bajas.length);
+    linea("Mortalidad sobre censo", dec(dat.mortalidad, 2) + " %");
+    dat.bajasPorCausa.slice(0, 10).forEach((b) => L.push(`  ${b.clave}: ${b.n}`));
+    bloque("Movimientos");
+    linea("Entradas", `${dat.entradas.animales} animales (${dat.entradas.n} mov.)`);
+    linea("Salidas", `${dat.salidas.animales} animales (${dat.salidas.n} mov.)`);
+    bloque("Pienso del molino");
+    linea("Total", kg(dat.piensoKg));
+    dat.piensoPorFinca.forEach((p) => L.push(`  ${p.clave}: ${kg(p.kg)}`));
+  } else if (id === "sanidad") {
+    linea("Tratamientos", dat.tratamientos.length);
+    linea("ANIMALES EN PLAZO DE ESPERA", dat.enEspera.length);
+    dat.enEspera.slice(0, 20).forEach((x) =>
+      L.push(`  ${x.animal} · ${x.medicamento} · libre el ${formatDate(x.fin)} (faltan ${x.restan} d)`));
+    linea("Tratamientos sin nº de receta", dat.sinReceta.length);
+    linea("Gasto en sanidad", money(dat.gastoSanidad));
+    bloque("Medicamentos usados");
+    dat.medicamentos.slice(0, 15).forEach((m) => L.push(`  ${m.clave}: ${m.n}`));
+  } else if (id === "plantacion") {
+    linea("Superficie total", haTxt(dat.haTotal));
+    linea("Regadío", haTxt(dat.haRegadio));
+    linea("Secano", haTxt(dat.haSecano));
+    bloque("Por cultivo");
+    dat.cultivos.forEach((c) => L.push(`  ${c.label}: ${haTxt(c.ha)}`));
+    bloque("Por sistema de riego");
+    dat.porRiego.forEach((x) => L.push(`  ${x.l}: ${haTxt(x.ha)}`));
+    bloque("Campaña");
+    linea("Sembrado", haTxt(dat.haSembrada));
+    linea("Cosechado", haTxt(dat.haCosechada));
+    linea("Producción", kg(dat.kgCosechados));
+    dat.rendimientos.forEach((x) =>
+      L.push(`  ${x.clave}: ${kg(x.kg)} en ${haTxt(x.ha)} = ${Math.round(x.kgHa).toLocaleString("es-ES")} kg/ha`));
+    bloque("Costes de campo");
+    linea("Total", money(dat.costeCampo));
+    linea("Por hectárea", money(dat.costePorHa));
+    linea("Labores pendientes", `${dat.tareasPendientes} (${dat.tareasAtrasadas} atrasadas)`);
+  } else if (id === "molino") {
+    linea("Producido", kg(dat.kgProducidos));
+    linea("Enviado", kg(dat.kgEnviados));
+    linea("Coste medio", money(dat.costeMedio) + "/kg");
+    linea("Horas de molino", dec(dat.horas, 1));
+    linea("Rendimiento", Math.round(dat.kgPorHora).toLocaleString("es-ES") + " kg/h");
+    bloque("Por receta");
+    dat.porReceta.forEach((x) => L.push(`  ${x.clave}: ${kg(x.kg)} a ${money(x.costeKg)}/kg`));
+    bloque("Envíos por finca");
+    dat.porDestino.forEach((x) => L.push(`  ${x.clave}: ${kg(x.kg)}`));
+    bloque("Materias primas consumidas");
+    dat.materias.forEach((m) => L.push(`  ${m.clave}: ${kg(m.kg)} · ${money(m.coste)}`));
+  } else if (id === "existencias") {
+    linea("Valor del stock del molino", money(dat.valorTotal));
+    linea("Pienso terminado", `${kg(dat.kgPienso)} · ${money(dat.valorPienso)}`);
+    linea("Materias primas", `${kg(dat.kgMaterias)} · ${money(dat.valorMaterias)}`);
+    bloque("Últimos recuentos");
+    dat.fichas.forEach((f) => L.push(`  ${f.finca} · ${f.tipo}: ${f.lineas} productos (${formatDate(f.fecha)})`));
+    if (dat.desactualizados.length) {
+      bloque("Sin actualizar hace más de 45 días");
+      dat.desactualizados.forEach((f) => L.push(`  ${f.finca} · ${f.tipo} (${formatDate(f.fecha)})`));
+    }
+  } else if (id === "resultado") {
+    linea("Ingresos", money(dat.ingreso));
+    linea("Gastos", money(dat.gasto));
+    linea("Margen", money(dat.margen) + (dat.pct !== null ? ` (${dec(dat.pct, 1)} %)` : ""));
+    bloque("Por centro");
+    dat.porCentro.forEach((c) =>
+      L.push(`  ${c.clave}: ingresos ${money(c.ingreso)} · gastos ${money(c.gasto)} · margen ${money(c.margen)}`));
+    bloque("Gasto por categoría");
+    dat.gastoPorCategoria.slice(0, 15).forEach((c) => {
+      const cat = findCategory(c.clave);
+      L.push(`  ${cat ? cat.label : c.clave}: ${money(c.importe)}`);
+    });
+  } else if (id === "iva") {
+    linea("IVA repercutido (ventas)", money(dat.repercutido));
+    linea("IVA soportado (compras)", money(dat.soportado));
+    linea("A liquidar", money(dat.aLiquidar));
+    linea("Base compras", money(dat.baseCompras));
+    linea("Base ventas", money(dat.baseVentas));
+    bloque("Facturas expedidas");
+    dat.expedidas.forEach((d) => {
+      const t = computeInvoiceTotals(d);
+      L.push(`  ${formatDate(d.date)} · ${d.invoiceNumber || "s/n"} · ${d.counterparty} · ${money(t.base)} + ${money(t.vatTotal)}`);
+    });
+    bloque("Facturas recibidas");
+    dat.recibidas.forEach((d) => {
+      const t = computeInvoiceTotals(d);
+      L.push(`  ${formatDate(d.date)} · ${d.invoiceNumber || "s/n"} · ${d.counterparty} · ${money(t.base)} + ${money(t.vatTotal)}`);
+    });
+    if (dat.sinNumero.length) linea("⚠ Facturas sin número", dat.sinNumero.length);
+    if (dat.sinNif.length) linea("⚠ Facturas sin NIF", dat.sinNif.length);
+  }
+  L.push("");
+  L.push(`Generado el ${formatDate(todayISO())} · Cuaderno de campo`);
+  return L.join("\n");
+}
+
+function calcularInforme(id, docs, r) {
+  switch (id) {
+    case "compras":     return informeCompras(docs, r);
+    case "ventas":      return informeVentas(docs, r);
+    case "ganado":      return informeGanado(docs, r);
+    case "sanidad":     return informeSanidad(docs, r);
+    case "plantacion":  return informePlantacion(docs, r);
+    case "molino":      return informeMolino(docs, r);
+    case "existencias": return informeExistencias(docs, r);
+    case "resultado":   return informeResultado(docs, r);
+    case "iva":         return informeIVA(docs, r);
+    default:            return null;
+  }
+}
+
+
+// =============================================================
+// MENÚ LATERAL
+// Todas las funciones de la app en un sitio, agrupadas por para
+// qué sirven. Cada persona solo ve lo que le toca por su puesto.
+// =============================================================
+// En el móvil es un cajón que se abre por encima de todo. En un portátil
+// sobra sitio, así que se queda puesto a la izquierda y no hay que abrir nada.
+function MenuLateral({ abierto, cerrar, setView, perms, role, currentUser, onLogout, docs, fijo }) {
+  const p = perms || {};
+  const puede = (f) => p.all || p[f];
+  const ir = (v) => { if (!fijo) cerrar(); setTimeout(() => setView(v), fijo ? 0 : 120); };
+
+  const pendientes = (docs || []).filter((d) =>
+    d.syncStatus === "pending" || d.syncStatus === "error" || d.syncStatus === "syncing").length;
+  const pedidosAbiertos = (docs || []).filter((d) => !d.kind && d.type === "orden" && !d.orderClosed).length;
+  const piensoPendiente = (docs || []).filter((d) =>
+    d.kind === "molino" && d.type === "pedido" && d.orderStatus === "pendiente").length;
+
+  const secciones = [
+    {
+      titulo: "Informes", icono: "📊",
+      items: informesVisibles(p).map((i) => ({
+        label: i.label, icono: i.icono, sub: i.desc,
+        onClick: () => ir({ name: "informe", informe: i.id })
+      }))
+    },
+    {
+      titulo: "Registrar", icono: "✍️",
+      items: [
+        puede("newAlbaran") && { label: "Compra", icono: "🛒", sub: "Albarán o factura de proveedor",
+          onClick: () => ir({ name: "new-compra" }) },
+        (p.all || p.admin) && { label: "Venta", icono: "💰", sub: "Albarán o factura a cliente",
+          onClick: () => ir({ name: "new-venta" }) },
+        puede("newOrden") && { label: "Pedido a proveedor", icono: "📋",
+          sub: pedidosAbiertos > 0 ? `${pedidosAbiertos} sin recibir` : "Encargar material",
+          aviso: pedidosAbiertos > 0 ? pedidosAbiertos : null,
+          onClick: () => ir({ name: "new-orden" }) },
+        puede("newAlbaran") && { label: "Presupuesto", icono: "🧮", sub: "Petición a proveedor",
+          onClick: () => ir({ name: "new-presupuesto" }) },
+        !p.hideGanaderia && (p.all || p.showGanaderia) && { label: "Registro de ganado", icono: "🐑",
+          sub: "Sanidad, partos, bajas, movimientos", onClick: () => ir({ name: "home" }) },
+        !p.hideAgricultura && (p.all || p.showAgricultura) && { label: "Registro agrícola", icono: "🌾",
+          sub: "Siembra, cosecha, fitosanitarios", onClick: () => ir({ name: "home" }) },
+        (p.all || p.showStock) && { label: "Recuento de existencias", icono: "📦",
+          sub: "Inventario mensual por finca", onClick: () => ir({ name: "home" }) }
+      ].filter(Boolean)
+    },
+    {
+      titulo: "Consultar", icono: "🔎",
+      items: [
+        { label: "Historial", icono: "🗂️", sub: "Todo lo registrado",
+          onClick: () => ir({ name: "history" }) },
+        puede("newAlbaran") && { label: "Compras, ventas y pedidos", icono: "📑",
+          sub: "Listados y estado de pago", onClick: () => ir({ name: "docs" }) },
+        !p.hideCalendar && { label: "Calendario de labores", icono: "📅",
+          sub: "Planificación de cultivos", onClick: () => ir({ name: "calendar" }) },
+        !p.hideAgricultura && { label: "Parcelas PAC", icono: "🗺️",
+          sub: "Listado por finca y superficie", onClick: () => ir({ name: "parcelas" }) },
+        !p.hideAgricultura && { label: "Plano de parcelas", icono: "🛰️",
+          sub: "Mapa, pívots y mediciones", onClick: () => ir({ name: "mapa-parcelas" }) },
+        !p.hideMolino && { label: "Molino", icono: "🏭",
+          sub: piensoPendiente > 0 ? `${piensoPendiente} pedido(s) de pienso pendiente(s)` : "Recetas, producción y envíos",
+          aviso: piensoPendiente > 0 ? piensoPendiente : null,
+          onClick: () => ir({ name: "mill" }) }
+      ].filter(Boolean)
+    },
+    {
+      titulo: "Administración", icono: "⚙️",
+      items: [
+        (p.all || p.admin) && { label: "Usuarios", icono: "👥", sub: "Altas, puestos y contraseñas",
+          onClick: () => ir({ name: "users" }) },
+        { label: "Ajustes", icono: "🔧",
+          sub: pendientes > 0 ? `${pendientes} documento(s) sin sincronizar` : "Sincronización, versión y datos",
+          aviso: pendientes > 0 ? pendientes : null,
+          onClick: () => ir({ name: "settings" }) }
+      ].filter(Boolean)
+    }
+  ].filter((s) => s.items.length > 0);
+
+  const contenido = (
+    <>
+            <div className="bg-emerald-950 text-amber-50 px-4 pt-6 pb-4"
+              style={{ paddingTop: fijo ? "1.5rem" : "calc(1.5rem + env(safe-area-inset-top))" }}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p style={{ fontFamily: "'Fraunces', serif" }} className="text-xl font-bold leading-tight">
+                    Cuaderno de campo
+                  </p>
+                  <p className="text-[11px] text-amber-50/70 mt-0.5 truncate">{COMPANY.short}</p>
+                </div>
+                {!fijo && (
+                  <button onClick={cerrar} aria-label="Cerrar menú"
+                    className="w-9 h-9 rounded-full bg-white/15 flex items-center justify-center flex-shrink-0 active:scale-95 transition">
+                    <X size={18} />
+                  </button>
+                )}
+              </div>
+              {currentUser && (
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
+                  <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-gradient-to-br ${role?.color || "from-stone-600 to-stone-800"}`}>
+                    <span>{role?.icon}</span>{role?.short}
+                  </span>
+                  <span className="text-[11px] text-amber-50/80 truncate">{currentUser.name || currentUser.username}</span>
+                </div>
+              )}
+            </div>
+
+            <nav className="px-3 py-3">
+              <button onClick={() => ir({ name: "home" })}
+                className="w-full text-left bg-emerald-950 text-amber-50 rounded-xl px-3 py-2.5 mb-4 flex items-center gap-3 active:scale-[0.98] transition">
+                <span className="text-lg flex-shrink-0">🏠</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-bold leading-tight">Inicio</span>
+                  <span className="block text-[11px] text-amber-50/70 leading-tight mt-0.5">Pantalla principal</span>
+                </span>
+                <ChevronRight size={14} className="opacity-60 flex-shrink-0" />
+              </button>
+
+              {secciones.map((s) => (
+                <div key={s.titulo} className="mb-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-stone-600 px-2 mb-1.5 flex items-center gap-1.5">
+                    <span>{s.icono}</span>{s.titulo}
+                  </p>
+                  <div className="space-y-1">
+                    {s.items.map((it) => (
+                      <button key={it.label} onClick={it.onClick}
+                        className="w-full text-left bg-white/70 hover:bg-white border border-stone-300/40 rounded-xl px-3 py-2.5 flex items-center gap-3 active:scale-[0.98] transition">
+                        <span className="text-lg flex-shrink-0">{it.icono}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-bold text-emerald-950 leading-tight">{it.label}</span>
+                          {it.sub && <span className="block text-[11px] text-stone-600 leading-tight mt-0.5">{it.sub}</span>}
+                        </span>
+                        {it.aviso ? (
+                          <span className="flex-shrink-0 min-w-[20px] h-5 px-1.5 rounded-full bg-rose-700 text-white text-[10px] font-bold flex items-center justify-center">
+                            {it.aviso}
+                          </span>
+                        ) : <ChevronRight size={14} className="text-stone-400 flex-shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              <button onClick={() => { if (!fijo) cerrar(); setTimeout(onLogout, 150); }}
+                className="w-full mt-2 mb-6 text-sm font-bold text-rose-700 py-3 rounded-xl border border-rose-300 bg-rose-50 active:scale-[0.98] transition">
+                Cerrar sesión
+              </button>
+              <p className="text-[10px] text-stone-500 text-center pb-6">
+                v{(typeof window !== "undefined" && window.__APP_VERSION__) || "?"}
+              </p>
+            </nav>
+    </>
+  );
+
+  // Ordenador: puesto siempre, sin botón y sin oscurecer la pantalla.
+  if (fijo) {
+    return (
+      <aside className="hidden lg:block fixed top-0 left-0 bottom-0 w-72 z-30 overflow-y-auto border-r border-stone-300/50"
+        style={{ background: "linear-gradient(180deg, #F5F0E1 0%, #EDE5D0 100%)" }}>
+        {contenido}
+      </aside>
+    );
+  }
+
+  // Móvil y tablet: cajón que se abre por encima.
+  return (
+    <div className="lg:hidden">
+      <AnimatePresence>
+        {abierto && (
+          <>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={cerrar} className="fixed inset-0 bg-black/45 z-40" />
+            <motion.aside
+              initial={{ x: "-100%" }} animate={{ x: 0 }} exit={{ x: "-100%" }}
+              transition={{ type: "tween", duration: 0.22 }}
+              className="fixed top-0 left-0 bottom-0 w-[86%] max-w-xs z-50 shadow-2xl overflow-y-auto"
+              style={{ background: "linear-gradient(180deg, #F5F0E1 0%, #EDE5D0 100%)" }}>
+              {contenido}
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// =============================================================
+// INFORMES — piezas de presentación
+// =============================================================
+
+// Tarjeta de dato suelto. Cuando no hay nada que contar, se dice.
+function Kpi({ label, valor, sub, tono }) {
+  const tonos = {
+    bueno: "bg-emerald-50 border-emerald-300 text-emerald-900",
+    aviso: "bg-amber-50 border-amber-300 text-amber-900",
+    malo:  "bg-rose-50 border-rose-300 text-rose-900",
+    neutro:"bg-white/70 border-stone-300/40 text-emerald-950"
+  };
+  return (
+    <div className={`border rounded-xl p-3 ${tonos[tono || "neutro"]}`}>
+      <p className="text-[10px] uppercase tracking-wider font-bold opacity-70 leading-tight">{label}</p>
+      <p style={{ fontFamily: "'Fraunces', serif" }} className="text-xl font-bold leading-tight mt-0.5 break-words">{valor}</p>
+      {sub && <p className="text-[11px] opacity-75 leading-tight mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+function Seccion({ titulo, nota, children }) {
+  return (
+    <div className="mb-5">
+      <p className="text-xs font-bold uppercase tracking-wider text-stone-700 px-1 mb-2">{titulo}</p>
+      {nota && <p className="text-[11px] text-stone-600 px-1 mb-2 leading-relaxed">{nota}</p>}
+      {children}
+    </div>
+  );
+}
+
+function Fila({ label, valor, sub, onClick, destacado }) {
+  const Cmp = onClick ? "button" : "div";
+  return (
+    <Cmp onClick={onClick}
+      className={`w-full text-left flex items-baseline justify-between gap-3 py-1.5 border-t border-dashed border-stone-300 first:border-0 ${onClick ? "active:opacity-60" : ""}`}>
+      <span className="min-w-0 flex-1">
+        <span className={`block text-sm leading-tight ${destacado ? "font-bold text-emerald-950" : "text-emerald-950"}`}>{label}</span>
+        {sub && <span className="block text-[11px] text-stone-600 leading-tight">{sub}</span>}
+      </span>
+      <span className="font-mono text-sm font-bold text-emerald-950 flex-shrink-0 whitespace-nowrap">{valor}</span>
+    </Cmp>
+  );
+}
+
+// Barras horizontales de una sola serie, ordenadas de mayor a menor.
+// Cada barra lleva su nombre y su cifra escritos al lado: el color nunca
+// es lo único que distingue una de otra.
+function Barras({ datos, valor, etiqueta, formato, color, colorDe, onClick, tope }) {
+  const lista = (datos || []).slice(0, tope || 10);
+  if (lista.length === 0) {
+    return <p className="text-sm text-stone-500 italic py-2">Sin datos en este periodo.</p>;
+  }
+  const max = Math.max(...lista.map((d) => Math.abs(valor(d))), 1);
+  return (
+    <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 space-y-2.5">
+      {lista.map((d, i) => {
+        const v = valor(d);
+        const pct = Math.max(2, (Math.abs(v) / max) * 100);
+        const c = colorDe ? colorDe(d) : (color || "#047857");
+        return (
+          <button key={i} onClick={onClick ? () => onClick(d) : undefined}
+            disabled={!onClick}
+            className={`w-full text-left block ${onClick ? "active:opacity-60" : "cursor-default"}`}>
+            <div className="flex items-baseline justify-between gap-2 mb-1">
+              <span className="text-[13px] text-emerald-950 leading-tight truncate">{etiqueta(d)}</span>
+              <span className="font-mono text-[13px] font-bold text-emerald-950 flex-shrink-0">{formato(v, d)}</span>
+            </div>
+            <div className="h-2 rounded-full bg-stone-200/70 overflow-hidden">
+              <div style={{ width: pct + "%", background: c, borderRadius: "4px" }} className="h-full" />
+            </div>
+          </button>
+        );
+      })}
+      {(datos || []).length > lista.length && (
+        <p className="text-[11px] text-stone-500 pt-1">
+          y {(datos || []).length - lista.length} más
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Dos barras enfrentadas: ingresos contra gastos, por centro.
+const COLOR_INGRESO = "#1baf7a";
+const COLOR_GASTO   = "#eb6834";
+
+function BarrasDobles({ datos }) {
+  if (!datos || datos.length === 0) {
+    return <p className="text-sm text-stone-500 italic py-2">Sin datos en este periodo.</p>;
+  }
+  const max = Math.max(...datos.map((d) => Math.max(d.ingreso, d.gasto)), 1);
+  return (
+    <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+      <div className="flex items-center gap-4 mb-3">
+        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-stone-700">
+          <span className="w-3 h-3 rounded-sm" style={{ background: COLOR_INGRESO }} />Ingresos
+        </span>
+        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-stone-700">
+          <span className="w-3 h-3 rounded-sm" style={{ background: COLOR_GASTO }} />Gastos
+        </span>
+      </div>
+      <div className="space-y-3">
+        {datos.map((d) => (
+          <div key={d.clave}>
+            <div className="flex items-baseline justify-between gap-2 mb-1.5">
+              <span className="text-[13px] font-semibold text-emerald-950 truncate">{d.clave}</span>
+              <span className={`font-mono text-[13px] font-bold flex-shrink-0 ${d.margen >= 0 ? "text-emerald-800" : "text-rose-700"}`}>
+                {money(d.margen)}
+              </span>
+            </div>
+            <div className="space-y-[2px]">
+              <div className="flex items-center gap-2">
+                <div className="h-2 rounded-full bg-stone-200/70 overflow-hidden flex-1">
+                  <div style={{ width: Math.max(2, (d.ingreso / max) * 100) + "%", background: COLOR_INGRESO, borderRadius: "4px" }} className="h-full" />
+                </div>
+                <span className="font-mono text-[11px] text-stone-700 w-24 text-right flex-shrink-0">{money(d.ingreso)}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-2 rounded-full bg-stone-200/70 overflow-hidden flex-1">
+                  <div style={{ width: Math.max(2, (d.gasto / max) * 100) + "%", background: COLOR_GASTO, borderRadius: "4px" }} className="h-full" />
+                </div>
+                <span className="font-mono text-[11px] text-stone-700 w-24 text-right flex-shrink-0">{money(d.gasto)}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const kgTxt = (n) => Math.round(n).toLocaleString("es-ES") + " kg";
+// A la española: coma decimal y punto de millar. Si no, "100.00 ha" se lee
+// como diez mil al lado de un "700.000 kg".
+const dec = (n, d) => (Number(n) || 0).toLocaleString("es-ES",
+  { minimumFractionDigits: d === undefined ? 2 : d, maximumFractionDigits: d === undefined ? 2 : d });
+// "1 factura" y no "1 facturas".
+const plural = (n, sing, plur) => `${n} ${n === 1 ? sing : (plur || sing + "s")}`;
+const haTxt = (n) => dec(n, 2) + " ha";
+
+// =============================================================
+// INFORMES — índice
+// =============================================================
+function InformesView({ docs, setView, perms }) {
+  const lista = informesVisibles(perms || {});
+  return (
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+      <FormHeader title="Informes" onBack={() => setView({ name: "home" })} />
+      <p className="text-sm text-stone-700 mb-4 leading-relaxed">
+        Cada informe se calcula en el momento con todo lo que hay registrado.
+        Puedes elegir el periodo dentro de cada uno y mandarlo por WhatsApp o correo.
+      </p>
+      <div className="space-y-2 mb-6">
+        {lista.map((i) => (
+          <button key={i.id} onClick={() => setView({ name: "informe", informe: i.id })}
+            className={`w-full text-left bg-gradient-to-br ${i.color} text-amber-50 rounded-2xl p-4 flex items-center gap-3 shadow-md active:scale-[0.98] transition`}>
+            <span className="text-3xl flex-shrink-0">{i.icono}</span>
+            <span className="min-w-0 flex-1">
+              <span style={{ fontFamily: "'Fraunces', serif" }} className="block font-bold text-lg leading-tight">{i.label}</span>
+              <span className="block text-[11px] text-amber-50/80 leading-tight mt-0.5">{i.desc}</span>
+            </span>
+            <ChevronRight size={18} className="flex-shrink-0 opacity-70" />
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-stone-600 leading-relaxed mb-6">
+        Si un informe sale vacío no es que falle: es que todavía no hay documentos
+        de ese tipo en el periodo elegido. Cuanto más al día esté el cuaderno, más
+        fiables son estas cifras.
+      </p>
+    </motion.div>
+  );
+}
+
+// =============================================================
+// INFORMES — detalle
+// =============================================================
+function InformeView({ id, docs, setView, settings, showToast }) {
+  const [periodo, setPeriodo] = useState(id === "iva" ? "trimestre" : "mes");
+  const cfg = INFORMES.find((x) => x.id === id) || INFORMES[0];
+  const rango = rangoDe(periodo);
+  const dat = calcularInforme(id, docs, rango);
+
+  const texto = () => informeATexto(id, dat, rango);
+  const copiar = async () => {
+    try { await navigator.clipboard.writeText(texto()); showToast("Informe copiado"); }
+    catch { showToast("No se pudo copiar", "err"); }
+  };
+  const porWhatsapp = () => {
+    const num = (settings.officeWhatsapp || "").replace(/[^\d+]/g, "").replace(/^\+/, "");
+    window.open(`https://wa.me/${num}?text=${encodeURIComponent(texto())}`, "_blank");
+  };
+  const porCorreo = () => {
+    if (!settings.officeEmail) { showToast("Configura el email en Ajustes", "err"); return; }
+    window.location.href = `mailto:${settings.officeEmail}?subject=${
+      encodeURIComponent(`Informe de ${cfg.label} · ${rango.label}`)}&body=${encodeURIComponent(texto())}`;
+  };
+  const abrir = (doc) => setView({ name: "detail", doc });
+
+  return (
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+      <FormHeader title={cfg.label} onBack={() => setView({ name: "informes" })} />
+
+      <div className={`bg-gradient-to-br ${cfg.color} text-amber-50 rounded-2xl p-4 mb-3 shadow-md`}>
+        <div className="flex items-center gap-3">
+          <span className="text-3xl">{cfg.icono}</span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-amber-50/70">Informe</p>
+            <h3 style={{ fontFamily: "'Fraunces', serif" }} className="font-bold text-xl leading-tight">{cfg.label}</h3>
+            <p className="text-[11px] text-amber-50/80 mt-0.5">
+              {rango.label}
+              {periodo !== "todo" && ` · ${formatDate(rango.desde)} — ${formatDate(rango.hasta)}`}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <label className="text-[10px] uppercase tracking-wider font-bold text-stone-700 block mb-1 px-1">Periodo</label>
+        <select value={periodo} onChange={(e) => setPeriodo(e.target.value)}
+          className="w-full bg-white/70 border border-stone-300/40 rounded-xl px-3 py-2.5 outline-none text-emerald-950 font-bold">
+          {PERIODOS.map((p) => <option key={p.v} value={p.v}>{p.l}</option>)}
+        </select>
+      </div>
+
+      {id === "compras"     && <CuerpoCompras d={dat} abrir={abrir} setView={setView} />}
+      {id === "ventas"      && <CuerpoVentas d={dat} abrir={abrir} />}
+      {id === "ganado"      && <CuerpoGanado d={dat} abrir={abrir} />}
+      {id === "sanidad"     && <CuerpoSanidad d={dat} abrir={abrir} />}
+      {id === "plantacion"  && <CuerpoPlantacion d={dat} abrir={abrir} setView={setView} />}
+      {id === "molino"      && <CuerpoMolino d={dat} abrir={abrir} />}
+      {id === "existencias" && <CuerpoExistencias d={dat} abrir={abrir} />}
+      {id === "resultado"   && <CuerpoResultado d={dat} />}
+      {id === "iva"         && <CuerpoIVA d={dat} abrir={abrir} />}
+
+      <div className="space-y-2 mt-6 mb-8">
+        <p className="text-xs font-bold uppercase tracking-wider text-stone-700 px-1">Enviar este informe</p>
+        <div className="grid grid-cols-2 gap-2">
+          <SendBtn icon={MessageCircle} label="WhatsApp" onClick={porWhatsapp} color="bg-emerald-700 text-amber-50" />
+          <SendBtn icon={Mail} label="Email" onClick={porCorreo} color="bg-emerald-950 text-amber-50" />
+        </div>
+        <SendBtn icon={Copy} label="Copiar el informe en texto" onClick={copiar}
+          color="bg-white/70 text-emerald-950 border border-stone-300/40" full />
+      </div>
+    </motion.div>
+  );
+}
+
+// --- Cuerpos de cada informe ---------------------------------
+function CuerpoCompras({ d, abrir, setView }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="Total comprado" valor={money(d.tot.total)} sub={plural(d.facturas.length + d.albaranesSinFactura.length, "documento")} />
+        <Kpi label="Base imponible" valor={money(d.tot.base)} sub={`IVA ${money(d.tot.iva)}`} />
+        <Kpi label="Pendiente de pago" valor={money(d.importeSinPagar)} sub={plural(d.sinPagar.length, "factura")}
+          tono={d.importeSinPagar > 0 ? "aviso" : "bueno"} />
+        <Kpi label="Vencido" valor={money(d.importeVencido)} sub={plural(d.vencidas.length, "factura")}
+          tono={d.importeVencido > 0 ? "malo" : "bueno"} />
+      </div>
+
+      <Seccion titulo="Por proveedor">
+        <Barras datos={d.proveedores} valor={(x) => x.importe} etiqueta={(x) => x.clave}
+          formato={(v) => money(v)} />
+      </Seccion>
+
+      <Seccion titulo="Por categoría de gasto">
+        <Barras datos={d.categorias} valor={(x) => x.importe}
+          etiqueta={(x) => { const c = findCategory(x.clave); return c ? `${c.emoji} ${c.label}` : x.clave; }}
+          formato={(v) => money(v)} />
+      </Seccion>
+
+      <Seccion titulo="Productos más comprados">
+        <Barras datos={d.productos} valor={(x) => x.importe} etiqueta={(x) => x.clave}
+          formato={(v) => money(v)} tope={8} />
+      </Seccion>
+
+      {d.albaranesSinFactura.length > 0 && (
+        <Seccion titulo="Albaranes sin factura"
+          nota="Mercancía recibida que el proveedor todavía no ha facturado. Cuenta como gasto, pero no entra en el libro de IVA.">
+          <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+            {d.albaranesSinFactura.slice(0, 12).map((x) => (
+              <Fila key={x.id} label={x.counterparty || "Sin nombre"} sub={formatDate(x.date)}
+                valor={money(computeInvoiceTotals(x).total)} onClick={() => abrir(x)} />
+            ))}
+          </div>
+        </Seccion>
+      )}
+
+      {d.sospechosos && d.sospechosos.length > 0 && (
+        <Seccion titulo="Ojo: posible gasto duplicado"
+          nota="Estos albaranes no están enlazados a ninguna factura, pero hay una factura del mismo proveedor por el mismo importe y de fecha parecida. Si son lo mismo, el gasto está contado dos veces.">
+          <div className="bg-amber-50 border border-amber-300 rounded-xl p-3">
+            {d.sospechosos.map((x) => (
+              <div key={x.albaran.id} className="py-1.5 border-t border-dashed border-amber-300 first:border-0">
+                <p className="text-sm font-bold text-amber-950">{x.albaran.counterparty} · {money(x.importe)}</p>
+                <div className="flex gap-3 mt-1">
+                  <button onClick={() => abrir(x.albaran)} className="text-[11px] text-amber-900 underline">
+                    Albarán del {formatDate(x.albaran.date)}
+                  </button>
+                  <button onClick={() => abrir(x.factura)} className="text-[11px] text-amber-900 underline">
+                    Factura del {formatDate(x.factura.date)}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Seccion>
+      )}
+
+      {d.vencidas.length > 0 && (
+        <Seccion titulo="Facturas vencidas sin pagar">
+          <div className="bg-rose-50 border border-rose-300 rounded-xl p-3">
+            {d.vencidas.map((x) => (
+              <Fila key={x.id} label={x.counterparty || "Sin nombre"}
+                sub={`Vencía el ${formatDate(x.dueDate)}`}
+                valor={money(computeInvoiceTotals(x).total)} onClick={() => abrir(x)} />
+            ))}
+          </div>
+        </Seccion>
+      )}
+
+      {d.pedidosAbiertos.length > 0 && (
+        <Seccion titulo="Pedidos sin recibir">
+          <div className="bg-amber-50 border border-amber-300 rounded-xl p-3">
+            {d.pedidosAbiertos.slice(0, 12).map((x) => (
+              <Fila key={x.id} label={x.counterparty || "Sin nombre"}
+                sub={`Pedido del ${formatDate(x.date)}`}
+                valor={`${(x.items || []).length} líneas`} onClick={() => abrir(x)} />
+            ))}
+          </div>
+        </Seccion>
+      )}
+    </>
+  );
+}
+
+function CuerpoVentas({ d, abrir }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="Total vendido" valor={money(d.tot.total)} sub={plural(d.facturas.length + d.albaranesSinFactura.length, "documento")} tono="bueno" />
+        <Kpi label="Base imponible" valor={money(d.tot.base)} sub={`IVA ${money(d.tot.iva)}`} />
+        <Kpi label="Pendiente de cobro" valor={money(d.importeSinCobrar)} sub={plural(d.sinCobrar.length, "factura")}
+          tono={d.importeSinCobrar > 0 ? "aviso" : "bueno"} />
+        <Kpi label="Vencido sin cobrar" valor={money(d.importeVencido)} sub={plural(d.vencidas.length, "factura")}
+          tono={d.importeVencido > 0 ? "malo" : "bueno"} />
+      </div>
+
+      <Seccion titulo="Por cliente">
+        <Barras datos={d.clientes} valor={(x) => x.importe} etiqueta={(x) => x.clave} formato={(v) => money(v)} />
+      </Seccion>
+
+      <Seccion titulo="Por producto vendido">
+        <Barras datos={d.productos} valor={(x) => x.importe}
+          etiqueta={(x) => x.clave} formato={(v, x) => money(v)} tope={8} />
+      </Seccion>
+
+      {d.sociedades.length > 1 && (
+        <Seccion titulo="Por sociedad que factura">
+          <Barras datos={d.sociedades} valor={(x) => x.importe} etiqueta={(x) => x.clave} formato={(v) => money(v)} />
+        </Seccion>
+      )}
+
+      {d.vencidas.length > 0 && (
+        <Seccion titulo="Cobros vencidos"
+          nota="Facturas cuya fecha de vencimiento ya pasó y siguen marcadas como pendientes.">
+          <div className="bg-rose-50 border border-rose-300 rounded-xl p-3">
+            {d.vencidas.map((x) => (
+              <Fila key={x.id} label={x.counterparty || "Sin nombre"}
+                sub={`Vencía el ${formatDate(x.dueDate)}`}
+                valor={money(computeInvoiceTotals(x).total)} onClick={() => abrir(x)} />
+            ))}
+          </div>
+        </Seccion>
+      )}
+    </>
+  );
+}
+
+function CuerpoGanado({ d, abrir }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="Censo actual" valor={d.censoTotal.toLocaleString("es-ES")} sub="Último recuento de cada finca" />
+        <Kpi label="Nacidos vivos" valor={d.vivos.toLocaleString("es-ES")} sub={plural(d.partos.length, "parto")} tono="bueno" />
+        <Kpi label="Bajas" valor={d.bajas.length} sub={`${dec(d.mortalidad, 2)} % del censo`}
+          tono={d.mortalidad > 5 ? "malo" : d.mortalidad > 2 ? "aviso" : "bueno"} />
+        <Kpi label="Media por camada" valor={dec(d.mediaCamada, 2)} sub={`${d.muertos} nacidos muertos`} />
+      </div>
+
+      <Seccion titulo="Censo por finca"
+        nota="Cuenta el último censo registrado en cada finca, sea de la fecha que sea.">
+        {d.censoPorFinca.length === 0
+          ? <p className="text-sm text-stone-500 italic">Todavía no hay ningún censo registrado.</p>
+          : d.censoPorFinca.map((c) => (
+            <div key={c.finca} className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-2">
+              <div className="flex items-baseline justify-between gap-2 mb-2">
+                <span className="text-sm font-bold text-emerald-950">{c.finca}</span>
+                <span className="font-mono text-base font-bold text-emerald-950">{c.total.toLocaleString("es-ES")}</span>
+              </div>
+              <p className="text-[11px] text-stone-600 mb-2">{c.especie} · censo del {formatDate(c.fecha)}</p>
+              {c.detalle.map((x) => (
+                <Fila key={x.k} label={x.l} valor={x.n.toLocaleString("es-ES")} />
+              ))}
+              <button onClick={() => abrir(c.doc)} className="text-[11px] text-emerald-800 underline mt-2">Ver el censo</button>
+            </div>
+          ))}
+      </Seccion>
+
+      <Seccion titulo="Movimientos de animales">
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+          <Fila label="Entradas" sub={`${d.entradas.n} movimientos`}
+            valor={`${d.entradas.animales} an.`} destacado />
+          <Fila label="Peso de entrada" valor={kgTxt(d.entradas.kg)} />
+          <Fila label="Salidas" sub={`${d.salidas.n} movimientos`}
+            valor={`${d.salidas.animales} an.`} destacado />
+          <Fila label="Peso de salida" valor={kgTxt(d.salidas.kg)} />
+          <Fila label="Cubriciones registradas" valor={d.cubriciones.length} />
+        </div>
+      </Seccion>
+
+      {d.bajasPorCausa.length > 0 && (
+        <Seccion titulo="Bajas por causa">
+          <Barras datos={d.bajasPorCausa} valor={(x) => x.n} etiqueta={(x) => x.clave}
+            formato={(v) => v} color="#b45309" />
+        </Seccion>
+      )}
+
+      {d.bajasPorCategoria.length > 0 && (
+        <Seccion titulo="Bajas por categoría de animal">
+          <Barras datos={d.bajasPorCategoria} valor={(x) => x.n} etiqueta={(x) => x.clave}
+            formato={(v) => v} color="#b45309" />
+        </Seccion>
+      )}
+
+      <Seccion titulo="Pienso recibido del molino"
+        nota="Solo el pienso de fabricación propia. El comprado fuera sale en el informe de compras.">
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-2">
+          <Fila label="Total del periodo" valor={kgTxt(d.piensoKg)} destacado />
+          <Fila label="Por cabeza" valor={d.kgPorCabeza > 0 ? dec(d.kgPorCabeza, 1) + " kg" : "—"}
+            sub="Sobre el censo actual" />
+        </div>
+        <Barras datos={d.piensoPorFinca} valor={(x) => x.kg} etiqueta={(x) => x.clave} formato={(v) => kgTxt(v)} />
+      </Seccion>
+    </>
+  );
+}
+
+function CuerpoSanidad({ d, abrir }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="En plazo de espera" valor={d.enEspera.length}
+          sub="No se pueden vender todavía" tono={d.enEspera.length > 0 ? "malo" : "bueno"} />
+        <Kpi label="Tratamientos" valor={d.tratamientos.length} sub="En el periodo" />
+        <Kpi label="Sin nº de receta" valor={d.sinReceta.length}
+          sub="Obligatorio por ley" tono={d.sinReceta.length > 0 ? "aviso" : "bueno"} />
+        <Kpi label="Gasto en sanidad" valor={money(d.gastoSanidad)} sub="Compras de la categoría" />
+      </div>
+
+      <Seccion titulo="Animales en plazo de espera"
+        nota="Fecha de inicio del tratamiento más la duración más el plazo de espera del medicamento. Hasta esa fecha no pueden ir a matadero ni venderse para consumo.">
+        {d.enEspera.length === 0 ? (
+          <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3">
+            <p className="text-sm text-emerald-900">
+              Ningún animal está dentro de un plazo de espera ahora mismo.
+            </p>
+          </div>
+        ) : (
+          <div className="bg-rose-50 border border-rose-300 rounded-xl p-3">
+            {d.enEspera.map((x) => (
+              <Fila key={x.doc.id} label={x.animal}
+                sub={`${x.medicamento} · ${x.especie}`}
+                valor={`${x.restan} d`} onClick={() => abrir(x.doc)} destacado />
+            ))}
+            <p className="text-[11px] text-rose-800 mt-2 leading-relaxed">
+              Los días que faltan hasta que quedan libres. Fecha de salida más próxima:{" "}
+              <strong>{formatDate(d.enEspera[0].fin)}</strong>.
+            </p>
+          </div>
+        )}
+      </Seccion>
+
+      {d.medicamentos.length > 0 && (
+        <Seccion titulo="Medicamentos más usados">
+          <Barras datos={d.medicamentos} valor={(x) => x.n} etiqueta={(x) => x.clave}
+            formato={(v) => v + (v === 1 ? " vez" : " veces")} color="#be123c" />
+        </Seccion>
+      )}
+
+      {d.porEspecie.length > 0 && (
+        <Seccion titulo="Tratamientos por especie">
+          <Barras datos={d.porEspecie} valor={(x) => x.n} etiqueta={(x) => x.clave}
+            formato={(v) => v} color="#be123c" />
+        </Seccion>
+      )}
+
+      {d.sinReceta.length > 0 && (
+        <Seccion titulo="Tratamientos sin número de receta"
+          nota="El RD 666/2023 obliga a guardar la receta veterinaria. Conviene completarlos antes de una inspección.">
+          <div className="bg-amber-50 border border-amber-300 rounded-xl p-3">
+            {d.sinReceta.slice(0, 12).map((x) => (
+              <Fila key={x.id} label={(x.fields || {}).animal || "Sin identificar"}
+                sub={(x.fields || {}).drug || "—"}
+                valor={formatDate(fechaDeDoc(x))} onClick={() => abrir(x)} />
+            ))}
+          </div>
+        </Seccion>
+      )}
+
+      <Seccion titulo="Visitas a la explotación">
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+          <Fila label="Visitas registradas en el periodo" valor={d.visitas.length} />
+        </div>
+      </Seccion>
+    </>
+  );
+}
+
+function CuerpoPlantacion({ d, abrir, setView }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="Superficie total" valor={haTxt(d.haTotal)} sub={plural(d.parcelas.length, "parcela PAC", "parcelas PAC")} />
+        <Kpi label="Regadío" valor={haTxt(d.haRegadio)} sub={`Secano ${haTxt(d.haSecano)}`} />
+        <Kpi label="Cosechado" valor={kgTxt(d.kgCosechados)} sub={`En ${haTxt(d.haCosechada)}`} tono="bueno" />
+        <Kpi label="Labores atrasadas" valor={d.tareasAtrasadas}
+          sub={`${d.tareasPendientes} pendientes`} tono={d.tareasAtrasadas > 0 ? "aviso" : "bueno"} />
+      </div>
+
+      <Seccion titulo="Superficie por cultivo"
+        nota="Lo planificado en el plano de parcelas para la campaña.">
+        <Barras datos={d.cultivos} valor={(x) => x.ha} etiqueta={(x) => x.label}
+          formato={(v) => haTxt(v)} colorDe={(x) => x.color} tope={14} />
+        {d.haSinAsignar > 0 && (
+          <p className="text-[11px] text-stone-600 mt-2 px-1">
+            Quedan {haTxt(d.haSinAsignar)} sin cultivo asignado en el plano.
+          </p>
+        )}
+      </Seccion>
+
+      <Seccion titulo="Superficie por sistema de riego">
+        <Barras datos={d.porRiego} valor={(x) => x.ha} etiqueta={(x) => x.l}
+          formato={(v) => haTxt(v)} colorDe={(x) => x.c} />
+      </Seccion>
+
+      <Seccion titulo="Superficie por finca">
+        <Barras datos={d.porFinca} valor={(x) => x.ha} etiqueta={(x) => x.clave}
+          formato={(v) => haTxt(v)} />
+      </Seccion>
+
+      {d.rendimientos.length > 0 && (
+        <Seccion titulo="Rendimiento de la cosecha"
+          nota="Kilos recogidos entre hectáreas cosechadas, según los registros de cosecha del periodo.">
+          <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+            {d.rendimientos.map((x) => (
+              <Fila key={x.clave} label={x.clave}
+                sub={`${kgTxt(x.kg)} en ${haTxt(x.ha)}`}
+                valor={x.kgHa > 0 ? Math.round(x.kgHa).toLocaleString("es-ES") + " kg/ha" : "—"} destacado />
+            ))}
+          </div>
+        </Seccion>
+      )}
+
+      <Seccion titulo="Labores del periodo">
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+          <Fila label="Siembras" sub={haTxt(d.haSembrada)} valor={d.siembras.length} />
+          <Fila label="Cosechas" sub={haTxt(d.haCosechada)} valor={d.cosechas.length} />
+          <Fila label="Tratamientos fitosanitarios" valor={d.fitos.length} />
+          <Fila label="Abonados" valor={d.abonados.length} />
+          <Fila label="Riegos" valor={d.riegosReg.length} />
+          <Fila label="Laboreo" valor={d.labores.length} />
+        </div>
+      </Seccion>
+
+      <Seccion titulo="Coste de campo"
+        nota="Compras de agricultura, combustible y maquinaria del periodo. No incluye mano de obra.">
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+          <Fila label="Total" valor={money(d.costeCampo)} destacado />
+          <Fila label="Por hectárea" valor={money(d.costePorHa)} />
+        </div>
+      </Seccion>
+
+      <button onClick={() => setView({ name: "mapa-parcelas" })}
+        className="w-full bg-emerald-950 text-amber-50 rounded-xl py-3 font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition">
+        🛰️ Ver el plano de parcelas
+      </button>
+    </>
+  );
+}
+
+function CuerpoMolino({ d, abrir }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="Producido" valor={kgTxt(d.kgProducidos)} sub={plural(d.producciones.length, "producción", "producciones")} />
+        <Kpi label="Coste medio" valor={money(d.costeMedio) + "/kg"} sub={`Total ${money(d.costeTotal)}`} />
+        <Kpi label="Enviado a fincas" valor={kgTxt(d.kgEnviados)} sub={plural(d.envios.length, "envío", "envíos")} />
+        <Kpi label="Rendimiento" valor={Math.round(d.kgPorHora).toLocaleString("es-ES") + " kg/h"}
+          sub={plural(dec(d.horas, 1), "hora")} />
+      </div>
+
+      <Seccion titulo="Producción por receta">
+        <Barras datos={d.porReceta} valor={(x) => x.kg} etiqueta={(x) => x.clave}
+          formato={(v, x) => kgTxt(v)} />
+        {d.porReceta.length > 0 && (
+          <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mt-2">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-1">Coste por kilo</p>
+            {d.porReceta.map((x) => (
+              <Fila key={x.clave} label={x.clave} valor={money(x.costeKg) + "/kg"} />
+            ))}
+          </div>
+        )}
+      </Seccion>
+
+      <Seccion titulo="Envíos por finca">
+        <Barras datos={d.porDestino} valor={(x) => x.kg} etiqueta={(x) => x.clave} formato={(v) => kgTxt(v)} />
+      </Seccion>
+
+      <Seccion titulo="Materias primas consumidas">
+        <Barras datos={d.materias} valor={(x) => x.kg} etiqueta={(x) => x.clave}
+          formato={(v) => kgTxt(v)} tope={12} color="#b45309" />
+      </Seccion>
+
+      <Seccion titulo="Stock actual"
+        nota="El stock no depende del periodo: es lo que hay hoy en el molino.">
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-2">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-1">Pienso terminado</p>
+          {d.stockPienso.length === 0
+            ? <p className="text-sm text-stone-500 italic">Sin recetas dadas de alta.</p>
+            : d.stockPienso.map((x) => (
+              <Fila key={x.receta.id} label={x.receta.name}
+                sub={x.alert ? `Por debajo del mínimo (${kgTxt(x.minStock)})` : null}
+                valor={kgTxt(x.stock)} />
+            ))}
+        </div>
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-1">Materias primas</p>
+          {d.stockMaterias.length === 0
+            ? <p className="text-sm text-stone-500 italic">Sin entradas de grano registradas.</p>
+            : d.stockMaterias.map((x) => (
+              <Fila key={x.name} label={x.name}
+                sub={x.negative ? "Sale negativo: falta registrar entradas" : (x.alert ? "Por debajo del mínimo" : null)}
+                valor={kgTxt(x.stock)} />
+            ))}
+        </div>
+      </Seccion>
+
+      {d.pendientes.length > 0 && (
+        <Seccion titulo="Pedidos de pienso pendientes">
+          <div className="bg-amber-50 border border-amber-300 rounded-xl p-3">
+            {d.pendientes.map((x) => (
+              <Fila key={x.id} label={fincaCanonica(x.destination) || "Sin finca"}
+                sub={`${x.recetaName || "Sin receta"} · pedido el ${formatDate(x.requestDate)}`}
+                valor={kgTxt(Number(x.kg) || 0)} onClick={() => abrir(x)} />
+            ))}
+          </div>
+        </Seccion>
+      )}
+    </>
+  );
+}
+
+function CuerpoExistencias({ d, abrir }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="Valor en el molino" valor={money(d.valorTotal)} sub="Pienso + materias primas" />
+        <Kpi label="Pienso terminado" valor={kgTxt(d.kgPienso)} sub={money(d.valorPienso)} />
+        <Kpi label="Materias primas" valor={kgTxt(d.kgMaterias)} sub={money(d.valorMaterias)} />
+        <Kpi label="Recuentos atrasados" valor={d.desactualizados.length}
+          sub="Más de 45 días" tono={d.desactualizados.length > 0 ? "aviso" : "bueno"} />
+      </div>
+
+      <Seccion titulo="Último recuento por finca"
+        nota="Solo cuenta el recuento más reciente de cada finca y tipo. Los anteriores quedan en el historial.">
+        {d.fichas.length === 0
+          ? <p className="text-sm text-stone-500 italic">Todavía no hay ningún recuento guardado.</p>
+          : d.fichas.map((f) => (
+            <button key={f.doc.id} onClick={() => abrir(f.doc)}
+              className="w-full text-left bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-2 active:scale-[0.98] transition">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xl">{f.icono}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-bold text-emerald-950 leading-tight">{f.finca}</span>
+                  <span className="block text-[11px] text-stone-600 leading-tight">{f.tipo} · {formatDate(f.fecha)}</span>
+                </span>
+                <span className="font-mono text-sm font-bold text-emerald-950">{f.lineas}</span>
+              </div>
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {f.categorias.slice(0, 5).map((c) => (
+                  <span key={c.clave} className="text-[10px] bg-stone-200/70 text-stone-700 rounded-full px-2 py-0.5">
+                    {c.clave} · {c.n}
+                  </span>
+                ))}
+              </div>
+            </button>
+          ))}
+      </Seccion>
+
+      {d.desactualizados.length > 0 && (
+        <Seccion titulo="Recuentos sin actualizar"
+          nota="Llevan más de 45 días sin repetirse. Si se valoran existencias para el cierre, conviene rehacerlos.">
+          <div className="bg-amber-50 border border-amber-300 rounded-xl p-3">
+            {d.desactualizados.map((f) => (
+              <Fila key={f.doc.id} label={`${f.finca} · ${f.tipo}`}
+                valor={formatDate(f.fecha)} onClick={() => abrir(f.doc)} />
+            ))}
+          </div>
+        </Seccion>
+      )}
+    </>
+  );
+}
+
+function CuerpoResultado({ d }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="Ingresos" valor={money(d.ingreso)} sub={plural(d.nVentas, "documento")} tono="bueno" />
+        <Kpi label="Gastos" valor={money(d.gasto)} sub={plural(d.nCompras, "documento")} />
+        <Kpi label="Margen" valor={money(d.margen)}
+          sub={d.pct !== null ? dec(d.pct, 1) + " % sobre ingresos" : "Sin ventas en el periodo"}
+          tono={d.margen >= 0 ? "bueno" : "malo"} />
+        {(() => {
+          const sa = d.porCentro.find((c) => c.clave === "Sin asignar");
+          const suelto = sa ? sa.ingreso + sa.gasto : 0;
+          return <Kpi label="Sin repartir" valor={money(suelto)}
+            sub={suelto > 0 ? "Documentos sin finca anotada" : "Todo imputado a una finca"}
+            tono={suelto > 0 ? "aviso" : "bueno"} />;
+        })()}
+      </div>
+
+      <Seccion titulo="Ingresos y gastos por centro"
+        nota="Es una cuenta de gestión, no la contabilidad oficial: reparte cada documento por la finca que lleva anotada. Las bases van sin IVA.">
+        <BarrasDobles datos={d.porCentro} />
+      </Seccion>
+
+      <Seccion titulo="Gasto por categoría">
+        <Barras datos={d.gastoPorCategoria} valor={(x) => x.importe}
+          etiqueta={(x) => { const c = findCategory(x.clave); return c ? `${c.emoji} ${c.label}` : x.clave; }}
+          formato={(v) => money(v)} color={COLOR_GASTO} tope={12} />
+      </Seccion>
+
+      <div className="bg-amber-100/60 border border-amber-300/50 rounded-xl p-3 mb-4">
+        <p className="text-xs text-amber-950 leading-relaxed">
+          Para que este informe valga de algo, cada compra y cada venta tienen que
+          llevar su finca. Lo que aparezca como <strong>Sin asignar</strong> es dinero
+          que no se puede repartir entre explotaciones.
+        </p>
+      </div>
+    </>
+  );
+}
+
+function CuerpoIVA({ d, abrir }) {
+  const libro = (lista, titulo, vacio) => (
+    <Seccion titulo={titulo}>
+      {lista.length === 0 ? <p className="text-sm text-stone-500 italic">{vacio}</p> : (
+        <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3">
+          {lista.map((x) => {
+            const t = computeInvoiceTotals(x);
+            return (
+              <Fila key={x.id}
+                label={x.counterparty || "Sin nombre"}
+                sub={`${formatDate(x.date)} · ${x.invoiceNumber || "sin número"}${x.counterpartyNif ? " · " + x.counterpartyNif : ""}`}
+                valor={money(t.total)} onClick={() => abrir(x)} />
+            );
+          })}
+        </div>
+      )}
+    </Seccion>
+  );
+  const tipos = (lista, titulo) => lista.length > 0 && (
+    <div className="bg-white/70 border border-stone-300/40 rounded-xl p-3 mb-2">
+      <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-1">{titulo}</p>
+      {lista.map((t) => (
+        <Fila key={t.tipo} label={`Tipo ${t.tipo} %`} sub={`Base ${money(t.base)}`} valor={money(t.cuota)} />
+      ))}
+    </div>
+  );
+
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 mb-5">
+        <Kpi label="IVA repercutido" valor={money(d.repercutido)} sub={`Ventas ${money(d.baseVentas)}`} />
+        <Kpi label="IVA soportado" valor={money(d.soportado)} sub={`Compras ${money(d.baseCompras)}`} />
+        <Kpi label={d.aLiquidar >= 0 ? "A ingresar" : "A compensar"} valor={money(Math.abs(d.aLiquidar))}
+          sub="Repercutido menos soportado" tono={d.aLiquidar >= 0 ? "aviso" : "bueno"} />
+        <Kpi label="Facturas sin número" valor={d.sinNumero.length}
+          sub={`${d.sinNif.length} sin NIF`} tono={(d.sinNumero.length + d.sinNif.length) > 0 ? "malo" : "bueno"} />
+      </div>
+
+      <Seccion titulo="Desglose por tipo">
+        {tipos(d.tiposVentas, "Repercutido (ventas)")}
+        {tipos(d.tiposCompras, "Soportado (compras)")}
+      </Seccion>
+
+      {libro(d.expedidas, "Facturas expedidas", "Ninguna factura de venta en el periodo.")}
+      {libro(d.recibidas, "Facturas recibidas", "Ninguna factura de compra en el periodo.")}
+
+      <div className="bg-amber-100/60 border border-amber-300/50 rounded-xl p-3 mb-4">
+        <p className="text-xs text-amber-950 leading-relaxed">
+          Esto reproduce el libro registro de facturas, pero <strong>no sustituye a la
+          declaración</strong>. Solo entran documentos marcados como factura: los
+          albaranes sin facturar quedan fuera, que es como debe ser. Antes de dar cifras
+          a la gestoría, comprueba que no queden facturas sin número ni sin NIF.
+        </p>
+      </div>
+    </>
+  );
+}
+
+
 export default function App() {
   const [view, setView] = useState({ name: "home" });
+  const [menuAbierto, setMenuAbierto] = useState(false);
   const [docs, setDocs] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [userLoaded, setUserLoaded] = useState(false);
@@ -10796,7 +12517,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen w-full" style={{
+    <div className="min-h-screen w-full lg:pl-72" style={{
       fontFamily: "'Manrope', system-ui, sans-serif",
       background: "linear-gradient(180deg, #F5F0E1 0%, #EDE5D0 100%)",
       color: "#1F2A20",
@@ -10804,7 +12525,14 @@ export default function App() {
     }}>
       <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-      <div className="max-w-md mx-auto pb-28 relative">
+      {/* El mismo menú de dos maneras: puesto en el portátil, cajón en el móvil. */}
+      <MenuLateral fijo setView={setView} perms={perms} role={role} currentUser={currentUser}
+        onLogout={handleLogout} docs={docs} cerrar={() => {}} />
+      <MenuLateral abierto={menuAbierto} cerrar={() => setMenuAbierto(false)}
+        setView={setView} perms={perms} role={role} currentUser={currentUser}
+        onLogout={handleLogout} docs={docs} />
+
+      <div className="max-w-md mx-auto pb-28 lg:pb-10 relative">
         <header className="px-5 pt-8 pb-4">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -10818,11 +12546,24 @@ export default function App() {
                 <p className="text-sm text-stone-700 leading-tight">de campo</p>
               </div>
             </div>
-            <button
-              onClick={() => setView({ name: "settings" })}
-              className="w-10 h-10 rounded-full bg-white/60 border border-stone-300/40 text-emerald-950 flex items-center justify-center shadow-sm active:scale-95 transition flex-shrink-0">
-              <Settings size={17} />
-            </button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                onClick={() => setMenuAbierto(true)}
+                aria-label="Abrir menú"
+                className="lg:hidden w-10 h-10 rounded-full bg-emerald-950 text-amber-50 flex items-center justify-center shadow-sm active:scale-95 transition">
+                <span className="flex flex-col gap-[3px] items-center justify-center">
+                  <span className="block w-4 h-[2px] bg-amber-50 rounded-full" />
+                  <span className="block w-4 h-[2px] bg-amber-50 rounded-full" />
+                  <span className="block w-4 h-[2px] bg-amber-50 rounded-full" />
+                </span>
+              </button>
+              <button
+                onClick={() => setView({ name: "settings" })}
+                aria-label="Ajustes"
+                className="w-10 h-10 rounded-full bg-white/60 border border-stone-300/40 text-emerald-950 flex items-center justify-center shadow-sm active:scale-95 transition">
+                <Settings size={17} />
+              </button>
+            </div>
           </div>
           {settings.workerName && (
             <p className="text-sm text-stone-700 mt-3">
@@ -10871,16 +12612,19 @@ export default function App() {
               {view.name === "parcelas" && <ParcelasView key="parc" docs={docs} setView={setView} saveDoc={saveDoc} settings={settings} showToast={showToast} isOnline={isOnline} />}
               {view.name === "mapa-parcelas" && <MapaParcelas key="mapa" docs={docs} setView={setView} saveDoc={saveDoc} deleteDoc={deleteDoc} settings={settings} showToast={showToast} isOnline={isOnline} />}
               {view.name === "parcela" && <ParcelaForm key={"pcl-" + parcelaId(view.parcela)} parcela={view.parcela} docs={docs} setView={setView} saveDoc={saveDoc} settings={settings} showToast={showToast} isOnline={isOnline} />}
+              {view.name === "informes" && <InformesView key="infs" docs={docs} setView={setView} perms={perms} />}
+              {view.name === "informe" && <InformeView key={"inf-" + view.informe} id={view.informe} docs={docs} setView={setView} settings={settings} showToast={showToast} />}
               {view.name === "users" && <UsersView key="users" setView={setView} currentUser={currentUser} showToast={showToast} isOnline={isOnline} />}
             </AnimatePresence>
           )}
         </main>
 
-        {["home", "history"].includes(view.name) && (
-          <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md px-5 pb-5 pt-2 bg-gradient-to-t from-[#EDE5D0] via-[#EDE5D0] to-transparent"
+        {["home", "history", "informes"].includes(view.name) && (
+          <nav className="lg:hidden fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md px-5 pb-5 pt-2 bg-gradient-to-t from-[#EDE5D0] via-[#EDE5D0] to-transparent"
             style={{ paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom))" }}>
             <div className="bg-emerald-950 rounded-2xl flex items-center justify-around p-1.5 shadow-xl">
               <NavBtn icon={Home} label="Inicio" active={view.name === "home"} onClick={() => setView({ name: "home" })} />
+              <NavBtn icon={BookOpen} label="Informes" active={view.name === "informes"} onClick={() => setView({ name: "informes" })} />
               <NavBtn icon={Archive} label="Historial" active={view.name === "history"} onClick={() => setView({ name: "history" })} />
             </div>
           </nav>
