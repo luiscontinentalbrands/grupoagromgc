@@ -56,77 +56,8 @@
   <meta http-equiv="Expires" content="0" />
   <script>
   // Versión de esta compilación. La escribe build_html.py en cada montaje.
-  window.__APP_VERSION__ = "2026.09.22-2152";
+  window.__APP_VERSION__ = "2026.10.23-1044";
 
-  // ---- Aviso de error -------------------------------------------------
-  // Va aquí, en el arranque de la página, y no dentro del código de la app:
-  // así aparece también cuando lo que falla es la propia carga de la app
-  // (sin cobertura, librerías que no bajan...) y no se queda la rueda girando.
-  window.__pintarError__ = function (titulo, detalles, traza) {
-    if (window.__errorPintado__) return;
-    window.__errorPintado__ = true;
-    var root = document.getElementById('loading') || document.getElementById('root') || document.body;
-    if (!root) return;
-    var v = window.__APP_VERSION__ || 'desconocida';
-    var pub = window.__VERSION_PUBLICADA__;
-    var desfase = (pub && pub !== v)
-      ? '<p style="background:#fef3c7;border:1px solid #fbbf24;padding:8px;border-radius:6px;">'
-        + '<strong>Tu movil tiene una version antigua.</strong><br/>Esta pantalla: ' + v
-        + ' &middot; Publicada: ' + pub + '<br/>Pulsa <strong>Actualizar y reiniciar</strong>.</p>'
-      : '';
-    var texto = titulo + '\nVersion: ' + v + '\n' + detalles + '\n' + (traza || '');
-    root.innerHTML =
-      '<div style="padding:16px;font-family:system-ui,sans-serif;background:#fef2f2;color:#7f1d1d;min-height:100vh;overflow:auto;box-sizing:border-box;">'
-      + '<h2 style="margin:0 0 4px;font-size:20px;">' + titulo + '</h2>'
-      + '<p style="font-size:12px;color:#9a3412;margin:0 0 12px;">Version de la app: <strong>' + v + '</strong></p>'
-      + desfase
-      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;">'
-      +   '<button id="__btnReinicio" style="flex:1;min-width:150px;background:#0F2922;color:#FAEFD2;border:0;border-radius:10px;padding:14px;font-size:15px;font-weight:700;">Actualizar y reiniciar</button>'
-      +   '<button id="__btnCopiar" style="flex:1;min-width:150px;background:#fff;color:#7f1d1d;border:1px solid #fca5a5;border-radius:10px;padding:14px;font-size:15px;font-weight:700;">Copiar el error</button>'
-      + '</div>'
-      + '<p style="font-size:12px;">Si el fallo sigue despues de reiniciar, pulsa <strong>Copiar el error</strong> y manda el texto por WhatsApp a la oficina.</p>'
-      + '<pre style="background:#fff;padding:10px;border:1px solid #fca5a5;border-radius:6px;overflow:auto;font-size:11px;white-space:pre-wrap;">'
-      + (detalles + '\n' + (traza || '')) + '</pre></div>';
-    var bR = document.getElementById('__btnReinicio');
-    if (bR) bR.onclick = function () { bR.textContent = 'Reiniciando...'; window.__reinicioTotal__(); };
-    var bC = document.getElementById('__btnCopiar');
-    if (bC) bC.onclick = function () {
-      function hecho() { bC.textContent = 'Copiado'; }
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(texto).then(hecho, manual);
-      } else { manual(); }
-      function manual() {
-        var ta = document.createElement('textarea');
-        ta.value = texto; document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); hecho(); }
-        catch (e) { bC.textContent = 'Copia el texto de abajo'; }
-        ta.remove();
-      }
-    };
-  };
-
-  window.addEventListener('error', function (e) {
-    window.__pintarError__('Error al cargar la app',
-      'Mensaje: ' + (e.message || 'desconocido') + '\nArchivo: ' + (e.filename || '-') + '\nLinea: ' + (e.lineno || '-'),
-      (e.error && e.error.stack) ? e.error.stack : String(e.error || ''));
-  });
-
-  window.addEventListener('unhandledrejection', function (e) {
-    window.__pintarError__('Error al cargar la app',
-      'Razon: ' + ((e.reason && e.reason.message) ? e.reason.message : String(e.reason)),
-      (e.reason && e.reason.stack) ? e.reason.stack : '');
-  });
-
-  // Si a los 25 segundos la app no ha arrancado, deja de girar la rueda y
-  // explica qué hacer, en vez de dejar la pantalla colgada para siempre.
-  setTimeout(function () {
-    if (window.__APP_ARRANCADA__ || window.__errorPintado__) return;
-    window.__pintarError__('La app no ha llegado a cargar',
-      'Lleva 25 segundos intentandolo.\nSuele ser falta de cobertura o una copia antigua guardada en el movil.',
-      '');
-  }, 25000);
-
-  // ---- Control de versión ---------------------------------------------
   // Los móviles se quedan con la copia vieja de la página guardada en el
   // navegador y siguen viendo fallos ya corregidos. Esto pregunta al
   // servidor qué versión hay publicada y, si no coincide, recarga la página
@@ -143,27 +74,22 @@
     };
 
     // Borra todo lo guardado en este móvil y vuelve a bajar la página entera.
-    window.__reinicioTotal__ = function () {
+    window.__reinicioTotal__ = async function () {
       try { localStorage.clear(); } catch (e) {}
       try { sessionStorage.clear(); } catch (e) {}
-      var tareas = [];
       try {
         if (window.caches && caches.keys) {
-          tareas.push(caches.keys().then(function (ks) {
-            return Promise.all(ks.map(function (k) { return caches.delete(k); }));
-          }));
+          var ks = await caches.keys();
+          await Promise.all(ks.map(function (k) { return caches.delete(k); }));
         }
       } catch (e) {}
       try {
         if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-          tareas.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
-            return Promise.all(rs.map(function (r) { return r.unregister(); }));
-          }));
+          var rs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(rs.map(function (r) { return r.unregister(); }));
         }
       } catch (e) {}
-      Promise.all(tareas).catch(function () {}).then(function () {
-        window.__forzarActualizacion__(Date.now());
-      });
+      window.__forzarActualizacion__(Date.now());
     };
 
     if (intentos() >= 2) return;
@@ -9145,38 +9071,157 @@ const CATEGORIES = [
 const findCategory = (id) => CATEGORIES.find((c) => c.id === id);
 
 // =============================================================
-// STORAGE / HELPERS
+// ALMACÉN LOCAL
+// Esta era la pieza que faltaba: el código llamaba a window.storage
+// y en la página publicada no existía, así que TODO lo que se metía
+// se perdía en silencio. Ahora el almacén se construye aquí.
+//
+// Va sobre IndexedDB porque los albaranes llevan fotos y en
+// localStorage (5 MB) se llenaría en seguida. Si el navegador no
+// deja usar IndexedDB, se cae a localStorage, y si tampoco, a
+// memoria — pero en ese último caso se avisa por pantalla, nunca
+// se da por guardado algo que no lo está.
 // =============================================================
+const BD_NOMBRE = "cuaderno-campo";
+const BD_ALMACEN = "docs";
+
+function abrirBD() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") return reject(new Error("sin indexedDB"));
+    let pet;
+    try { pet = indexedDB.open(BD_NOMBRE, 1); } catch (e) { return reject(e); }
+    pet.onupgradeneeded = () => {
+      const bd = pet.result;
+      if (!bd.objectStoreNames.contains(BD_ALMACEN)) bd.createObjectStore(BD_ALMACEN);
+    };
+    pet.onsuccess = () => resolve(pet.result);
+    pet.onerror = () => reject(pet.error || new Error("no se pudo abrir la base local"));
+    pet.onblocked = () => reject(new Error("base local bloqueada por otra pestaña"));
+  });
+}
+
+function hacerAlmacenIDB(bd) {
+  const op = (modo, fn) => new Promise((resolve, reject) => {
+    let tx;
+    try { tx = bd.transaction(BD_ALMACEN, modo); } catch (e) { return reject(e); }
+    const st = tx.objectStore(BD_ALMACEN);
+    let res;
+    try { res = fn(st); } catch (e) { return reject(e); }
+    tx.oncomplete = () => resolve(res && res.result !== undefined ? res.result : undefined);
+    tx.onerror = () => reject(tx.error || new Error("error en la base local"));
+    tx.onabort = () => reject(tx.error || new Error("transacción cancelada"));
+  });
+  return {
+    tipo: "indexeddb",
+    async get(k) { const v = await op("readonly", (st) => st.get(k)); return v === undefined ? null : { value: v }; },
+    async set(k, v) { await op("readwrite", (st) => st.put(v, k)); },
+    async delete(k) { await op("readwrite", (st) => st.delete(k)); },
+    async list(prefijo) {
+      const todas = await op("readonly", (st) => st.getAllKeys());
+      return { keys: (todas || []).filter((k) => String(k).startsWith(prefijo || "")) };
+    }
+  };
+}
+
+function hacerAlmacenLocalStorage() {
+  // Prueba de verdad que se puede escribir: en navegación privada
+  // localStorage existe pero puede lanzar al escribir.
+  const sonda = "__prueba__";
+  localStorage.setItem(sonda, "1");
+  localStorage.removeItem(sonda);
+  return {
+    tipo: "localstorage",
+    async get(k) { const v = localStorage.getItem(k); return v === null ? null : { value: v }; },
+    async set(k, v) { localStorage.setItem(k, v); },
+    async delete(k) { localStorage.removeItem(k); },
+    async list(prefijo) {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(prefijo || "")) keys.push(k);
+      }
+      return { keys };
+    }
+  };
+}
+
+function hacerAlmacenMemoria() {
+  const m = new Map();
+  return {
+    tipo: "memoria",
+    async get(k) { return m.has(k) ? { value: m.get(k) } : null; },
+    async set(k, v) { m.set(k, v); },
+    async delete(k) { m.delete(k); },
+    async list(prefijo) { return { keys: [...m.keys()].filter((k) => k.startsWith(prefijo || "")) }; }
+  };
+}
+
+// Se prepara una sola vez y todas las llamadas esperan a que esté listo.
+let almacenListo = null;
+function prepararAlmacen() {
+  if (almacenListo) return almacenListo;
+  almacenListo = (async () => {
+    try {
+      const bd = await abrirBD();
+      const a = hacerAlmacenIDB(bd);
+      await a.set("__prueba__", "1"); await a.delete("__prueba__");
+      return a;
+    } catch (e1) {
+      try {
+        const a = hacerAlmacenLocalStorage();
+        console.warn("[Almacén] IndexedDB no disponible, se usa localStorage:", e1 && e1.message);
+        return a;
+      } catch (e2) {
+        console.error("[Almacén] Sin almacén en este navegador:", e2 && e2.message);
+        if (typeof window !== "undefined") window.__SIN_ALMACEN__ = true;
+        return hacerAlmacenMemoria();
+      }
+    }
+  })();
+  return almacenListo;
+}
+
+// El código de la app sigue llamando a storage.get/set/delete/list igual
+// que antes; lo que cambia es que ahora hay algo detrás de verdad y que
+// set() dice si ha funcionado para que nadie cante victoria por error.
 const storage = {
   async get(key) {
-    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
-    catch { return null; }
+    try { const a = await prepararAlmacen(); const r = await a.get(key); return r ? JSON.parse(r.value) : null; }
+    catch (e) { console.error("[Almacén] fallo al leer", key, e); return null; }
   },
   async set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+    try { const a = await prepararAlmacen(); await a.set(key, JSON.stringify(value)); return true; }
     catch (e) {
-      console.error("Storage set error:", e);
-      if (e && (e.name === "QuotaExceededError" || e.code === 22)) {
-        window.__STORAGE_FULL__ = true;
+      console.error("[Almacén] FALLO AL GUARDAR", key, e);
+      if (typeof window !== "undefined") {
+        window.__ULTIMO_FALLO_ALMACEN__ = (e && e.message) || "error desconocido";
+        if (/quota|exceeded|full/i.test(String(e && e.name) + String(e && e.message))) window.__STORAGE_FULL__ = true;
       }
       return false;
     }
   },
   async delete(key) {
-    try { localStorage.removeItem(key); return true; }
-    catch { return false; }
+    try { const a = await prepararAlmacen(); await a.delete(key); return true; }
+    catch (e) { console.error("[Almacén] fallo al borrar", key, e); return false; }
   },
   async list(prefix) {
-    try {
-      const keys = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith(prefix)) keys.push(k);
-      }
-      return keys;
-    } catch { return []; }
+    try { const a = await prepararAlmacen(); const r = await a.list(prefix); return (r && r.keys) || []; }
+    catch (e) { console.error("[Almacén] fallo al listar", prefix, e); return []; }
+  },
+  async tipo() { try { return (await prepararAlmacen()).tipo; } catch { return "ninguno"; } },
+  // Comprobación de verdad: escribe, relee y compara. La usa Ajustes.
+  async comprobar() {
+    const clave = "__comprobacion__";
+    const testigo = { ts: Date.now(), n: Math.random() };
+    const escrito = await storage.set(clave, testigo);
+    if (!escrito) return { ok: false, motivo: window.__ULTIMO_FALLO_ALMACEN__ || "no se pudo escribir" };
+    const leido = await storage.get(clave);
+    await storage.delete(clave);
+    if (!leido || leido.n !== testigo.n) return { ok: false, motivo: "se escribe pero no se puede releer" };
+    return { ok: true, tipo: await storage.tipo() };
   }
 };
+
 
 const formatDate = (iso) => new Date(iso).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
 const formatTime = (iso) => new Date(iso).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
@@ -9966,13 +10011,21 @@ async function deleteDocFromCloud(docId) {
   }
 }
 
-function subscribeToCloud(callback) {
+function subscribeToCloud(callback, alFallar) {
   if (!firebaseDb) return () => {};
   const unsub = fbOnValue(fbRef(firebaseDb, "docs"), (snapshot) => {
     const data = snapshot.val() || {};
-    callback(Object.values(data));
+    if (alFallar) alFallar(null);
+    // Los documentos de prueba de sincronización no son datos de la finca.
+    callback(Object.values(data).filter((d) => d && d.kind !== "prueba"));
   }, (err) => {
+    // Esto antes solo se escribía en la consola: si Firebase denegaba el
+    // acceso, la app se quedaba vacía y nadie se enteraba de por qué.
     console.error("Firebase subscription error:", err);
+    const m = (err && err.message) || "error de lectura";
+    if (alFallar) alFallar(/permission|denied/i.test(m)
+      ? "Firebase no deja leer los documentos a este usuario. Revisa que tenga ficha en Usuarios y las reglas de la base de datos."
+      : m);
   });
   return unsub;
 }
@@ -10217,7 +10270,23 @@ async function runBootstrapImport({ force = false } = {}) {
 // =============================================================
 // CONNECTION BADGE — muestra estado online/offline y docs pendientes
 // =============================================================
-function ConnectionBadge({ isOnline, pendingCount }) {
+function ConnectionBadge({ isOnline, pendingCount, errorCount, falloNube }) {
+  if (falloNube) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-rose-700 text-white"
+        title={falloNube}>
+        <span>⛔</span> Sin acceso a la nube
+      </span>
+    );
+  }
+  if (errorCount > 0 && isOnline) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-rose-700 text-white"
+        title={`${errorCount} documento(s) no han podido subir a la nube. Entra en Ajustes y pulsa Sincronizar.`}>
+        <span>⚠️</span> {errorCount} sin subir
+      </span>
+    );
+  }
   if (!isOnline) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-stone-500 text-white"
@@ -12227,10 +12296,98 @@ function CuerpoIVA({ d, abrir }) {
 }
 
 
+// =============================================================
+// AVISO DE "NO SE HA GUARDADO"
+// Tapa la pantalla entera a propósito. Un aviso pequeño se pasa por
+// alto y la persona se va creyendo que ha guardado. Aquí además se
+// enseñan los datos y se pueden copiar, para no tener que reescribirlos.
+// =============================================================
+function AvisoNoGuardado({ fallo, reintentar, descartar }) {
+  const [probando, setProbando] = useState(false);
+  const [copiado, setCopiado] = useState(false);
+  if (!fallo) return null;
+  const d = fallo.doc || {};
+
+  const resumen = () => {
+    const L = [`NO GUARDADO — ${new Date().toLocaleString("es-ES")}`];
+    if (d.counterparty) L.push(`Proveedor/cliente: ${d.counterparty}`);
+    if (d.date) L.push(`Fecha: ${d.date}`);
+    if (d.invoiceNumber) L.push(`Nº factura: ${d.invoiceNumber}`);
+    if (d.finca || d.farm) L.push(`Finca: ${d.finca || d.farm}`);
+    (d.items || []).forEach((it) => {
+      L.push(`  ${it.desc || "—"} · ${it.qty || ""} ${it.unit || ""}${it.unitPrice ? " · " + it.unitPrice + " €/u" : ""}`);
+    });
+    Object.entries(d.fields || {}).forEach(([k, v]) => { if (v) L.push(`  ${k}: ${v}`); });
+    if (d.notes) L.push(`Notas: ${d.notes}`);
+    L.push(`Motivo: ${fallo.motivo}`);
+    return L.join("\n");
+  };
+
+  const copiar = async () => {
+    try { await navigator.clipboard.writeText(resumen()); setCopiado(true); }
+    catch { setCopiado(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-rose-950/95 overflow-y-auto">
+      <div className="max-w-md mx-auto p-5 pb-10" style={{ paddingTop: "calc(1.5rem + env(safe-area-inset-top))" }}>
+        <p className="text-5xl mb-2">⚠️</p>
+        <h2 style={{ fontFamily: "'Fraunces', serif" }} className="text-2xl font-bold text-white leading-tight mb-1">
+          NO se ha guardado
+        </h2>
+        <p className="text-rose-100 text-sm leading-relaxed mb-4">
+          Este documento no ha quedado registrado. <strong>No cierres esta pantalla
+          sin copiar los datos</strong> o se perderán.
+        </p>
+
+        <div className="bg-rose-900/60 border border-rose-400/40 rounded-xl p-3 mb-4">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-rose-200 mb-1">Motivo</p>
+          <p className="text-sm text-rose-50 leading-snug">{fallo.motivo}</p>
+        </div>
+
+        <div className="bg-white/95 rounded-xl p-3 mb-4">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-stone-600 mb-1.5">Lo que habías metido</p>
+          <pre className="text-[11px] text-emerald-950 whitespace-pre-wrap font-mono leading-snug">{resumen()}</pre>
+        </div>
+
+        <div className="space-y-2">
+          <button onClick={async () => { setProbando(true); await reintentar(); setProbando(false); }}
+            disabled={probando}
+            className="w-full bg-white text-rose-900 rounded-xl py-3.5 font-bold text-base active:scale-[0.98] transition disabled:opacity-60">
+            {probando ? "Probando otra vez..." : "Intentar guardar otra vez"}
+          </button>
+          <button onClick={copiar}
+            className="w-full bg-rose-800 text-white border border-rose-400/50 rounded-xl py-3.5 font-bold text-base active:scale-[0.98] transition">
+            {copiado ? "Copiado ✓" : "Copiar los datos"}
+          </button>
+          <button onClick={descartar}
+            className="w-full text-rose-200 py-3 text-sm font-semibold underline">
+            Ya lo he copiado, cerrar
+          </button>
+        </div>
+
+        <p className="text-[11px] text-rose-200/80 leading-relaxed mt-4">
+          Si esto sale a menudo, avisa a la oficina: puede ser que el móvil no
+          tenga sitio o que el navegador esté en modo privado.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState({ name: "home" });
   const [menuAbierto, setMenuAbierto] = useState(false);
+  // Documento que NO ha podido guardarse. Mientras haya uno, se enseña
+  // a pantalla completa con sus datos dentro.
+  const [falloGuardado, setFalloGuardado] = useState(null);
+  // Si la nube deja de dejarnos leer, se dice en la cabecera.
+  const [falloNube, setFalloNube] = useState(null);
+  // Espejo siempre al día de los documentos, para el reintento periódico.
+  const docsRef = useRef([]);
   const [docs, setDocs] = useState([]);
+  // El reintento periódico necesita la lista de ahora, no la del primer render.
+  useEffect(() => { docsRef.current = docs; });
   const [currentUser, setCurrentUser] = useState(null);
   const [userLoaded, setUserLoaded] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
@@ -12344,18 +12501,26 @@ export default function App() {
         }
       }
       // Quitar local los que ya no están en la nube (borrados desde otro móvil)
-      // — solo si su syncStatus era 'synced', sino podrían ser pendientes locales
-      for (const ld of localDocs) {
-        if (!cloudMap.has(ld.id) && ld.syncStatus === "synced") {
-          await storage.delete(`doc:${ld.id}`);
-          localMap.delete(ld.id);
+      // — solo si su syncStatus era 'synced', sino podrían ser pendientes locales.
+      // Y NUNCA si la nube llega vacía: eso no es que hayan borrado todo, es
+      // que la lectura ha fallado o se está reconectando. Borrar ahí dejaría
+      // el móvil en blanco de golpe.
+      if (cloudDocs.length > 0) {
+        for (const ld of localDocs) {
+          if (!cloudMap.has(ld.id) && ld.syncStatus === "synced") {
+            await storage.delete(`doc:${ld.id}`);
+            localMap.delete(ld.id);
+          }
         }
+      } else if (localDocs.length > 0) {
+        console.warn("[Sync] La nube ha llegado vacía y hay", localDocs.length,
+          "documentos en el móvil: no se borra nada.");
       }
 
       const merged = Array.from(localMap.values()).map(normalizarFincas)
         .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
       setDocs(merged);
-    });
+    }, setFalloNube);
     return () => unsub();
   }, [loading]);
 
@@ -12380,6 +12545,30 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOnline]);
 
+  // REINTENTO PERIÓDICO. El de arriba solo salta cuando el móvil pierde y
+  // recupera la cobertura. Si la subida falló estando con internet — por
+  // permisos, por un corte del servidor — el documento se quedaba ahí para
+  // siempre sin que nadie lo reintentara. Esto lo revisa cada minuto, para
+  // que un gasto no pueda quedarse varado en un móvil sin que nadie lo sepa.
+  const reintentando = useRef(false);
+  useEffect(() => {
+    if (loading || !firebaseDb) return;
+    const id = setInterval(async () => {
+      if (reintentando.current) return;
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+      const varados = docsRef.current.filter((d) =>
+        d.syncStatus === "pending" || d.syncStatus === "error");
+      if (varados.length === 0) return;
+      reintentando.current = true;
+      console.log(`[Sync] Reintento periódico de ${varados.length} documento(s)`);
+      try {
+        for (const d of varados) { await triggerSync(d.id, d); }
+      } finally { reintentando.current = false; }
+    }, 60000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
   // Aviso cuando se pierde la conexión
   const [wasOnline, setWasOnline] = useState(isOnline);
   useEffect(() => {
@@ -12403,6 +12592,10 @@ export default function App() {
     showToast("Ajustes guardados");
   };
 
+  // Guarda un documento y DEVUELVE si de verdad ha quedado guardado en
+  // algún sitio — en el móvil, en la nube o en los dos. Si no ha quedado
+  // en ninguno, se levanta un aviso a pantalla completa con los datos
+  // dentro, para que nadie se vaya pensando que ha guardado.
   const saveDoc = async (doc) => {
     // Siempre con el nombre oficial de la explotación, para que Giralta,
     // Tamujoso y Las Rozas no acaben como tres fincas distintas.
@@ -12410,17 +12603,39 @@ export default function App() {
     const enriched = firebaseDb
       ? { ...limpio, syncStatus: limpio.syncStatus === "synced" ? "pending" : (limpio.syncStatus || "pending") }
       : limpio;
-    await storage.set(`doc:${enriched.id}`, enriched);
+
+    const enElMovil = await storage.set(`doc:${enriched.id}`, enriched);
     setDocs((d) => {
       const f = d.filter((x) => x.id !== enriched.id);
-      return [enriched, ...f].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return [enriched, ...f].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
     });
-    if (firebaseDb) triggerSync(enriched.id);
+
+    let enLaNube = false, motivoNube = "";
+    if (firebaseDb) {
+      const r = await triggerSync(enriched.id, enriched);
+      enLaNube = !!(r && r.ok);
+      motivoNube = (r && r.error) || "";
+    }
+
+    if (!enElMovil && !enLaNube) {
+      setFalloGuardado({
+        doc: enriched,
+        motivo: firebaseDb
+          ? `No se ha podido guardar en el móvil (${window.__ULTIMO_FALLO_ALMACEN__ || "almacén no disponible"}) ni enviar a la nube (${motivoNube || "sin conexión"}).`
+          : `No se ha podido guardar en el móvil: ${window.__ULTIMO_FALLO_ALMACEN__ || "almacén no disponible"}.`
+      });
+      return false;
+    }
+    return true;
   };
 
-  const triggerSync = async (docId) => {
-    const stored = await storage.get(`doc:${docId}`);
-    if (!stored) return;
+  // Antes empezaba con "si no está en el móvil, no hago nada". Como el
+  // almacén local estaba roto, eso bloqueaba TODAS las subidas a la nube.
+  // Ahora, si no se puede leer del móvil, se sube el documento que nos
+  // acaban de dar.
+  const triggerSync = async (docId, respaldo) => {
+    const stored = (await storage.get(`doc:${docId}`)) || respaldo;
+    if (!stored) return { ok: false, error: "documento no encontrado" };
     const syncing = { ...stored, syncStatus: "syncing" };
     await storage.set(`doc:${docId}`, syncing);
     setDocs((d) => d.map((x) => x.id === docId ? syncing : x));
@@ -12432,6 +12647,7 @@ export default function App() {
       : { ...syncing, syncStatus: "error", syncError: result.error };
     await storage.set(`doc:${docId}`, updated);
     setDocs((d) => d.map((x) => x.id === docId ? updated : x));
+    return result;
   };
 
   const syncAllNow = async () => {
@@ -12525,6 +12741,16 @@ export default function App() {
     }}>
       <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
+      <AvisoNoGuardado fallo={falloGuardado}
+        reintentar={async () => {
+          const d = falloGuardado && falloGuardado.doc;
+          if (!d) return;
+          setFalloGuardado(null);
+          const ok = await saveDoc(d);
+          if (ok) showToast("Guardado a la segunda");
+        }}
+        descartar={() => setFalloGuardado(null)} />
+
       {/* El mismo menú de dos maneras: puesto en el portátil, cajón en el móvil. */}
       <MenuLateral fijo setView={setView} perms={perms} role={role} currentUser={currentUser}
         onLogout={handleLogout} docs={docs} cerrar={() => {}} />
@@ -12579,7 +12805,10 @@ export default function App() {
               className="text-[10px] text-stone-600 underline">
               Cerrar sesión
             </button>
-            <ConnectionBadge isOnline={isOnline} pendingCount={docs.filter((d) => d.syncStatus === "pending" || d.syncStatus === "error" || d.syncStatus === "syncing").length} />
+            <ConnectionBadge isOnline={isOnline}
+              pendingCount={docs.filter((d) => d.syncStatus === "pending" || d.syncStatus === "syncing").length}
+              errorCount={docs.filter((d) => d.syncStatus === "error").length}
+              falloNube={falloNube} />
           </div>
         </header>
 
@@ -13523,7 +13752,7 @@ function RegistroForm({ regType, setView, saveDoc, settings, showToast, initial 
       showToast(`Falta: ${missing[0].label}`, "err");
       return;
     }
-    await saveDoc(doc);
+    if (!(await saveDoc(doc))) return;  // el aviso a pantalla completa ya está puesto
     showToast("Borrador guardado");
     setView({ name: "detail", doc });
   };
@@ -13589,6 +13818,11 @@ function RegistroForm({ regType, setView, saveDoc, settings, showToast, initial 
             className="w-full bg-emerald-950 text-amber-50 rounded-xl py-3 font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition shadow-sm disabled:opacity-60">
             <Camera size={16} /><ImageIcon size={16} /> Añadir foto · Cámara o galería
           </button>
+        )}
+        {esPresupuesto && (
+          <p className="text-[10px] text-stone-600 mt-2 leading-snug">
+            Hazle foto a todas las hojas, incluidas las condiciones de la letra pequeña. Caben 5 por presupuesto.
+          </p>
         )}
         {processingPhoto && <p className="text-xs text-stone-600 text-center mt-2">Procesando foto...</p>}
       </div>
@@ -13691,7 +13925,7 @@ function StockForm({ stockType, setView, saveDoc, settings, showToast, initial }
       showToast("Apunta al menos un producto con cantidad (puede ser 0)", "err");
       return;
     }
-    await saveDoc(doc);
+    if (!(await saveDoc(doc))) return;  // el aviso a pantalla completa ya está puesto
     showToast("Recuento guardado");
     setView({ name: "detail", doc });
   };
@@ -13899,7 +14133,7 @@ function PlanForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, d
     if (!doc.crop)  { showToast("Elige el cultivo", "err"); return; }
     // Sort events by date
     const sorted = { ...doc, events: [...doc.events].sort((a, b) => (a.plannedDate || "").localeCompare(b.plannedDate || "")) };
-    await saveDoc(sorted);
+    if (!(await saveDoc(sorted))) return;  // el aviso a pantalla completa ya está puesto
     showToast(initial ? "Plan actualizado" : "Plan creado");
     setView({ name: "calendar" });
   };
@@ -14628,7 +14862,7 @@ function FeedRequestForm({ setView, saveDoc, deleteDoc, settings, showToast, ini
     if (!doc.destination) { showToast("Elige la finca destino", "err"); return; }
     if (!doc.recetaId)    { showToast("Elige el tipo de pienso", "err"); return; }
     if (!doc.kg)          { showToast("Indica los kg necesarios", "err"); return; }
-    await saveDoc(doc);
+    if (!(await saveDoc(doc))) return;  // el aviso a pantalla completa ya está puesto
     if (initial) {
       showToast("Pedido actualizado");
       setView({ name: "mill" });
@@ -15034,7 +15268,7 @@ function EntradaForm({ setView, saveDoc, deleteDoc, settings, showToast, initial
     if (!doc.kg) { showToast("Indica los kg que entran", "err"); return; }
     if (doc.originType === "propia" && !doc.origin) { showToast("Elige la finca de origen", "err"); return; }
     if (doc.originType === "proveedor" && !doc.origin.trim()) { showToast("Indica el proveedor", "err"); return; }
-    await saveDoc(doc);
+    if (!(await saveDoc(doc))) return;  // el aviso a pantalla completa ya está puesto
     showToast(initial ? "Entrada actualizada" : "Entrada registrada");
     setView({ name: "mill" });
   };
@@ -15225,7 +15459,7 @@ function RecetaForm({ setView, saveDoc, deleteDoc, settings, showToast, initial,
     if (!doc.species)    { showToast("Elige la especie destino", "err"); return; }
     const validIngs = doc.ingredients.filter((i) => i.name.trim() && Number(i.pct) > 0);
     if (validIngs.length === 0) { showToast("Añade al menos un ingrediente con %", "err"); return; }
-    await saveDoc({ ...doc, ingredients: validIngs });
+    if (!(await saveDoc({ ...doc, ingredients: validIngs }))) return;  // el aviso a pantalla completa ya está puesto
     showToast(initial ? "Receta actualizada" : "Receta guardada");
     setView({ name: "mill" });
   };
@@ -15481,7 +15715,7 @@ function ProduccionForm({ setView, saveDoc, deleteDoc, settings, showToast, init
   const handleSave = async () => {
     if (!doc.recetaId)  { showToast("Elige la receta", "err"); return; }
     if (!doc.actualKg)  { showToast("Indica los kg reales producidos", "err"); return; }
-    await saveDoc(doc);
+    if (!(await saveDoc(doc))) return;  // el aviso a pantalla completa ya está puesto
     showToast("Producción guardada");
     setView({ name: "mill" });
   };
@@ -15757,7 +15991,7 @@ function EnvioForm({ setView, saveDoc, deleteDoc, settings, showToast, initial, 
     if (!doc.destination) { showToast("Elige la finca destino", "err"); return; }
     if (!doc.feedType.trim()) { showToast("Indica el tipo de pienso", "err"); return; }
     if (!doc.kg) { showToast("Indica los kg enviados", "err"); return; }
-    await saveDoc(doc);
+    if (!(await saveDoc(doc))) return;  // el aviso a pantalla completa ya está puesto
     if (initial) {
       showToast("Envío actualizado");
       setView({ name: "mill" });
@@ -16935,7 +17169,10 @@ function DocForm({ setView, saveDoc, settings, showToast, initial, allDocs, init
       return;
     }
     const final = { ...doc, items: validItems };
-    await saveDoc(final);
+    // Si no se ha guardado, el aviso a pantalla completa ya está puesto:
+    // aquí nos quedamos quietos, sin decir "guardado" y sin salir del
+    // formulario, para no perder lo escrito.
+    if (!(await saveDoc(final))) return;
 
     // El pedido de origen se cierra al recibirlo o al facturarlo
     if (final.linkedOrderId && Array.isArray(allDocs)) {
@@ -17313,11 +17550,6 @@ function DocForm({ setView, saveDoc, settings, showToast, initial, allDocs, init
         {(doc.photos || []).length < 5 && (
           <p className="text-[11px] text-stone-600 text-center mt-1.5 leading-snug">
             Tu móvil te dejará elegir entre <strong>hacer una foto</strong> o <strong>seleccionar de la galería</strong>
-          </p>
-        )}
-        {esPresupuesto && (
-          <p className="text-[10px] text-stone-600 mt-2 leading-snug">
-            Hazle foto a todas las hojas, incluidas las condiciones de la letra pequeña. Caben 5 por presupuesto.
           </p>
         )}
         {processingPhoto && <p className="text-xs text-stone-600 text-center mt-2">Procesando foto...</p>}
@@ -19207,6 +19439,232 @@ function VersionBlock({ showToast }) {
   );
 }
 
+// =============================================================
+// PRUEBA DE SINCRONIZACIÓN
+// No basta con que el código parezca correcto: esto escribe de verdad
+// en Firebase desde este móvil, lo vuelve a leer y lo borra, y dice
+// qué ha pasado en cada paso. Si algo no va — reglas, permisos,
+// cobertura — aquí se ve, en vez de descubrirlo cuando ya se han
+// perdido dos semanas de albaranes.
+// =============================================================
+function PruebaSincronizacion({ docs, showToast, currentUser }) {
+  const [pasos, setPasos] = useState(null);
+  const [probando, setProbando] = useState(false);
+  const [conectado, setConectado] = useState(null);
+  const [enLaNube, setEnLaNube] = useState(null);
+
+  // Firebase publica si hay conexión viva con el servidor.
+  useEffect(() => {
+    if (!firebaseDb) { setConectado(false); return; }
+    try {
+      const unsub = fbOnValue(fbRef(firebaseDb, ".info/connected"),
+        (snap) => setConectado(snap.val() === true));
+      return () => { try { unsub(); } catch {} };
+    } catch { setConectado(null); }
+  }, []);
+
+  const pendientes = (docs || []).filter((d) =>
+    d.syncStatus === "pending" || d.syncStatus === "error" || d.syncStatus === "syncing");
+  const conFallo = (docs || []).filter((d) => d.syncStatus === "error");
+
+  const probar = async () => {
+    setProbando(true);
+    const r = [];
+    const añade = (t, ok, detalle) => r.push({ t, ok, detalle });
+
+    if (!firebaseDb) {
+      añade("Conectar con Firebase", false, "La app no ha podido arrancar Firebase.");
+      setPasos(r); setProbando(false); return;
+    }
+    añade("Firebase arrancado", true, FIREBASE_CONFIG.projectId);
+    añade("Sesión iniciada", !!currentUser,
+      currentUser ? `${currentUser.name || currentUser.username}` : "sin usuario: no se podrá escribir");
+
+    const id = `_prueba-${(currentUser && currentUser.uid) || "anon"}-${Date.now()}`;
+    const testigo = {
+      id, kind: "prueba", tipo: "comprobacion",
+      creadoPor: (currentUser && (currentUser.name || currentUser.username)) || "desconocido",
+      ts: new Date().toISOString(), n: Math.random()
+    };
+
+    // 1. ESCRIBIR
+    let escrito = false;
+    try {
+      await fbSet(fbRef(firebaseDb, `docs/${id}`), testigo);
+      escrito = true;
+      añade("Escribir en la nube", true, "el documento de prueba ha subido");
+    } catch (e) {
+      const m = (e && e.message) || "error";
+      añade("Escribir en la nube", false,
+        /permission|denied/i.test(m)
+          ? "PERMISO DENEGADO — revisa las reglas de Firebase y que este usuario tenga ficha en /users"
+          : m);
+    }
+
+    // 2. VOLVER A LEER
+    if (escrito) {
+      try {
+        const snap = await fbGet(fbRef(firebaseDb, `docs/${id}`));
+        const v = snap && snap.val();
+        añade("Volver a leerlo", !!(v && v.n === testigo.n),
+          v ? "lo que ha subido coincide con lo que se escribió" : "no se ha podido recuperar");
+      } catch (e) {
+        const m = (e && e.message) || "error";
+        añade("Volver a leerlo", false,
+          /permission|denied/i.test(m) ? "PERMISO DENEGADO de lectura en /docs" : m);
+      }
+    }
+
+    // 3. CONTAR LO QUE HAY EN LA NUBE
+    try {
+      const snap = await fbGet(fbRef(firebaseDb, "docs"));
+      const todos = Object.values((snap && snap.val()) || {});
+      const reales = todos.filter((d) => d && d.kind !== "prueba");
+      setEnLaNube(reales.length);
+      añade("Leer todo lo guardado", true, `${reales.length} documentos en la nube ahora mismo`);
+    } catch (e) {
+      setEnLaNube(null);
+      añade("Leer todo lo guardado", false, (e && e.message) || "error");
+    }
+
+    // 4. LIMPIAR
+    if (escrito) {
+      try { await fbRemove(fbRef(firebaseDb, `docs/${id}`)); añade("Limpiar la prueba", true, "borrado"); }
+      catch (e) { añade("Limpiar la prueba", false, (e && e.message) || "error"); }
+    }
+
+    setPasos(r);
+    setProbando(false);
+    const todoBien = r.every((x) => x.ok);
+    showToast(todoBien ? "Sincronización correcta" : "La sincronización NO funciona", todoBien ? "ok" : "err");
+  };
+
+  const todoBien = pasos && pasos.every((x) => x.ok);
+
+  return (
+    <div className={`border rounded-xl p-3 mb-3 ${
+      pasos === null ? "bg-white/70 border-stone-300/40"
+      : todoBien ? "bg-emerald-50 border-emerald-300" : "bg-rose-50 border-rose-400"}`}>
+
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <span className="text-[10px] uppercase tracking-wider font-bold text-stone-700">Conexión con la nube</span>
+        <span className={`text-xs font-bold ${
+          conectado === null ? "text-stone-600" : conectado ? "text-emerald-800" : "text-rose-800"}`}>
+          {conectado === null ? "comprobando..." : conectado ? "conectado" : "sin conexión"}
+        </span>
+      </div>
+
+      <div className="text-xs mb-2 space-y-0.5">
+        <div className="flex justify-between">
+          <span className="text-stone-700">Documentos en este móvil</span>
+          <span className="font-mono font-bold text-emerald-950">{(docs || []).length}</span>
+        </div>
+        {enLaNube !== null && (
+          <div className="flex justify-between">
+            <span className="text-stone-700">Documentos en la nube</span>
+            <span className="font-mono font-bold text-emerald-950">{enLaNube}</span>
+          </div>
+        )}
+        <div className="flex justify-between">
+          <span className="text-stone-700">Sin subir todavía</span>
+          <span className={`font-mono font-bold ${pendientes.length ? "text-amber-800" : "text-emerald-800"}`}>
+            {pendientes.length}
+          </span>
+        </div>
+        {conFallo.length > 0 && (
+          <div className="flex justify-between">
+            <span className="text-rose-800 font-semibold">Con fallo al subir</span>
+            <span className="font-mono font-bold text-rose-800">{conFallo.length}</span>
+          </div>
+        )}
+      </div>
+
+      {pasos && (
+        <div className="bg-white/80 rounded-lg p-2 mb-2">
+          {pasos.map((x, i) => (
+            <div key={i} className="py-1 border-t border-dashed border-stone-300 first:border-0">
+              <div className="flex items-start gap-1.5">
+                <span className="text-sm leading-none mt-0.5">{x.ok ? "✅" : "❌"}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-emerald-950 leading-tight">{x.t}</p>
+                  {x.detalle && <p className="text-[11px] text-stone-600 leading-snug">{x.detalle}</p>}
+                </div>
+              </div>
+            </div>
+          ))}
+          {!todoBien && (
+            <p className="text-[11px] text-rose-800 leading-snug mt-2 pt-2 border-t border-rose-200">
+              Mientras esto no salga todo en verde, lo que se meta en este móvil
+              <strong> no lo verán los demás</strong>. Manda esta pantalla a la oficina.
+            </p>
+          )}
+        </div>
+      )}
+
+      <button onClick={probar} disabled={probando}
+        className={`w-full text-xs font-bold py-2.5 rounded-lg active:scale-[0.98] transition disabled:opacity-60 ${
+          pasos && !todoBien ? "bg-rose-700 text-white" : "bg-emerald-950 text-amber-50"}`}>
+        {probando ? "Probando..." : "Probar la sincronización ahora"}
+      </button>
+      <p className="text-[10px] text-stone-600 mt-2 leading-relaxed">
+        Escribe un documento de prueba en la nube, lo vuelve a leer y lo borra.
+        Hazlo en cada móvil la primera vez que lo use alguien.
+      </p>
+    </div>
+  );
+}
+
+// Comprueba de verdad que este móvil puede guardar: escribe algo, lo
+// relee y lo compara. Si esto falla, nada de lo que se meta quedará
+// registrado — que es justo lo que estaba pasando sin que se notara.
+function ComprobacionAlmacen({ showToast }) {
+  const [estado, setEstado] = useState(null);
+  const [probando, setProbando] = useState(false);
+
+  const probar = async () => {
+    setProbando(true);
+    const r = await storage.comprobar();
+    setEstado(r);
+    setProbando(false);
+    if (!r.ok) showToast("Este móvil NO puede guardar", "err");
+  };
+
+  useEffect(() => { probar(); }, []);
+
+  const NOMBRES = { indexeddb: "IndexedDB (el bueno, aguanta fotos)",
+                    localstorage: "localStorage (limitado, ojo con las fotos)",
+                    memoria: "ninguno — no se guarda nada" };
+
+  return (
+    <div className={`border rounded-xl p-3 mb-3 ${
+      estado === null ? "bg-white/70 border-stone-300/40"
+      : estado.ok ? "bg-emerald-50 border-emerald-300" : "bg-rose-50 border-rose-400"}`}>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="text-[10px] uppercase tracking-wider font-bold text-stone-700">¿Guarda este móvil?</span>
+        <span className={`text-xs font-bold ${
+          estado === null ? "text-stone-600" : estado.ok ? "text-emerald-800" : "text-rose-800"}`}>
+          {probando ? "Comprobando..." : estado === null ? "—" : estado.ok ? "SÍ, correcto" : "NO"}
+        </span>
+      </div>
+      {estado && estado.ok && (
+        <p className="text-[11px] text-stone-600 leading-snug">
+          Almacén: {NOMBRES[estado.tipo] || estado.tipo}
+        </p>
+      )}
+      {estado && !estado.ok && (
+        <p className="text-[11px] text-rose-800 leading-snug">
+          <strong>Nada de lo que metas en este móvil se va a guardar.</strong> Motivo: {estado.motivo}.
+          Prueba a salir del modo privado del navegador, o a hacer sitio en el móvil.
+        </p>
+      )}
+      <button onClick={probar} disabled={probando}
+        className="w-full mt-2 text-xs font-bold py-2 rounded-lg bg-white border border-stone-300/60 text-emerald-950 active:scale-[0.98] transition disabled:opacity-60">
+        {probando ? "Comprobando..." : "Comprobar otra vez"}
+      </button>
+    </div>
+  );
+}
+
 function StorageBlock({ showToast }) {
   const [used, setUsed] = useState(0);
   const [confirm, setConfirm] = useState(false);
@@ -20853,7 +21311,7 @@ function ParcelaForm({ parcela, docs, setView, saveDoc, settings, showToast, isO
   const planDeParcela = docs.find(d => d.kind === "plan" && d.linkedParcelaId === id);
 
   const guardar = async () => {
-    await saveDoc(doc);
+    if (!(await saveDoc(doc))) return;  // el aviso a pantalla completa ya está puesto
     showToast("Parcela guardada");
     setView({ name: "parcelas" });
   };
@@ -21240,8 +21698,10 @@ function SettingsView({ settings, saveSettings, setView, syncAllNow, docs, showT
       <VersionBlock showToast={showToast} />
 
       <p className="text-xs font-bold uppercase tracking-wider text-stone-700 px-1 mb-2 mt-4 flex items-center gap-1.5">
-        <Archive size={11} /> Espacio en el móvil
+        <Archive size={11} /> Guardado en este móvil
       </p>
+      <ComprobacionAlmacen showToast={showToast} />
+      <PruebaSincronizacion docs={docs} showToast={showToast} currentUser={currentUser} />
       <StorageBlock showToast={showToast} />
 
       <p className="text-xs font-bold uppercase tracking-wider text-stone-700 px-1 mb-2 mt-4 flex items-center gap-1.5">
@@ -21338,14 +21798,62 @@ function SettingsView({ settings, saveSettings, setView, syncAllNow, docs, showT
 
 
 // Global error handler that shows errors on screen
-// El aviso de error y el control de versión viven en el <head>, para que
-// funcionen aunque la app no llegue a cargar. Aquí solo queda el arranque.
+// Muestra el fallo en pantalla con la versión y con botones, para que
+// cualquiera pueda mandar el texto exacto o reiniciar la app desde el móvil.
+function __pintarError__(titulo, detalles, traza) {
+  const root = document.getElementById('loading') || document.getElementById('root');
+  if (!root) return;
+  const v = window.__APP_VERSION__ || 'desconocida';
+  const pub = window.__VERSION_PUBLICADA__;
+  const desfase = pub && pub !== v
+    ? '<p style="background:#fef3c7;border:1px solid #fbbf24;padding:8px;border-radius:6px;">'
+      + '<strong>Tu móvil tiene una versión antigua.</strong><br/>Esta pantalla: ' + v
+      + ' · Publicada: ' + pub + '<br/>Pulsa <strong>Actualizar y reiniciar</strong>.</p>'
+    : '';
+  const texto = titulo + '\nVersion: ' + v + '\n' + detalles + '\n' + (traza || '');
+  root.innerHTML =
+    '<div style="padding:16px;font-family:system-ui,sans-serif;background:#fef2f2;color:#7f1d1d;min-height:100vh;overflow:auto;">'
+    + '<h2 style="margin:0 0 4px;">' + titulo + '</h2>'
+    + '<p style="font-size:12px;color:#9a3412;margin:0 0 12px;">Versión de la app: <strong>' + v + '</strong></p>'
+    + desfase
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;">'
+    +   '<button id="__btnReinicio" style="flex:1;min-width:150px;background:#0F2922;color:#FAEFD2;border:0;border-radius:10px;padding:14px;font-size:15px;font-weight:700;">Actualizar y reiniciar</button>'
+    +   '<button id="__btnCopiar" style="flex:1;min-width:150px;background:#fff;color:#7f1d1d;border:1px solid #fca5a5;border-radius:10px;padding:14px;font-size:15px;font-weight:700;">Copiar el error</button>'
+    + '</div>'
+    + '<p style="font-size:12px;">Si el fallo sigue después de reiniciar, pulsa <strong>Copiar el error</strong> y manda el texto por WhatsApp a la oficina.</p>'
+    + '<pre style="background:#fff;padding:10px;border:1px solid #fca5a5;border-radius:6px;overflow:auto;font-size:11px;white-space:pre-wrap;">'
+    + (detalles + '\n' + (traza || '')) + '</pre></div>';
+  const bR = document.getElementById('__btnReinicio');
+  if (bR) bR.onclick = function () { bR.textContent = 'Reiniciando...'; window.__reinicioTotal__(); };
+  const bC = document.getElementById('__btnCopiar');
+  if (bC) bC.onclick = async function () {
+    try { await navigator.clipboard.writeText(texto); bC.textContent = 'Copiado'; }
+    catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = texto; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); bC.textContent = 'Copiado'; } catch (e2) { bC.textContent = 'Selecciona el texto de abajo'; }
+      ta.remove();
+    }
+  };
+}
+
+window.addEventListener('error', function (e) {
+  __pintarError__('Error al cargar la app',
+    'Mensaje: ' + (e.message || 'desconocido') + '\nArchivo: ' + (e.filename || '-') + '\nLinea: ' + (e.lineno || '-'),
+    e.error && e.error.stack ? e.error.stack : String(e.error || ''));
+});
+
+window.addEventListener('unhandledrejection', function (e) {
+  __pintarError__('Error al cargar la app',
+    'Razon: ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)),
+    e.reason && e.reason.stack ? e.reason.stack : '');
+});
+
 try {
   ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-  window.__APP_ARRANCADA__ = true;
   setTimeout(function () { document.getElementById("loading")?.remove(); }, 100);
 } catch (err) {
-  window.__pintarError__('Error al arrancar la app', 'Mensaje: ' + (err.message || err), err.stack || '');
+  __pintarError__('Error al arrancar la app', 'Mensaje: ' + (err.message || err), err.stack || '');
 }
 </script>
 </body>
